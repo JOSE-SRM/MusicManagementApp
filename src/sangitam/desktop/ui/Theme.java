@@ -25,7 +25,7 @@ public final class Theme {
     public static final Font BODY = new Font("SansSerif", Font.PLAIN, 14);
     public static final Font BODY_BOLD = new Font("SansSerif", Font.BOLD, 14);
     public static final Font SMALL = new Font("SansSerif", Font.PLAIN, 12);
-    public static final Font TITLE = new Font("SansSerif", Font.BOLD, 28);
+    public static final Font TITLE = new Font("SansSerif", Font.BOLD, 30);
     public static final Font HEADING = new Font("SansSerif", Font.BOLD, 18);
 
     private Theme() {

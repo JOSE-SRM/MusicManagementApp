@@ -8,7 +8,8 @@ import java.util.function.Consumer;
 public final class NavigationPanel extends JPanel {
     private static final long serialVersionUID = 1L;
 
-    public NavigationPanel(Consumer<String> navigate, Runnable importMedia, Consumer<String> notify) {
+    public NavigationPanel(Consumer<String> navigate, Runnable importMedia, Runnable toggleLibrary,
+                           Runnable quickActions, Consumer<String> notify) {
         super();
         setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
         setBackground(Theme.BLACK);
@@ -22,11 +23,13 @@ public final class NavigationPanel extends JPanel {
         add(brand);
         add(Box.createVerticalStrut(30));
 
-        add(navButton("Home", AppIcons.Kind.HOME, () -> navigate.accept("home")));
+        add(navButton("Listen now", AppIcons.Kind.HOME, () -> navigate.accept("home")));
         add(Box.createVerticalStrut(6));
         add(navButton("Search", AppIcons.Kind.SEARCH, () -> navigate.accept("search")));
         add(Box.createVerticalStrut(6));
         add(navButton("Browse media", AppIcons.Kind.FOLDER, importMedia));
+        add(Box.createVerticalStrut(6));
+        add(navButton("Your library", AppIcons.Kind.MUSIC, toggleLibrary));
         add(Box.createVerticalStrut(22));
 
         JLabel collection = UiFactory.label("Your collection", Theme.SMALL, Theme.TEXT_MUTED);
@@ -40,6 +43,11 @@ public final class NavigationPanel extends JPanel {
         add(navButton("Artists", AppIcons.Kind.MUSIC, () -> notify.accept("Artists selected")));
 
         add(Box.createVerticalGlue());
+        String shortcut = System.getProperty("os.name", "").toLowerCase().contains("mac") ? "⌘K" : "Ctrl K";
+        JButton quick = navButton("Quick actions  " + shortcut, AppIcons.Kind.SEARCH, quickActions);
+        quick.setFont(Theme.SMALL);
+        add(quick);
+        add(Box.createVerticalStrut(6));
         add(navButton("Settings", AppIcons.Kind.SETTINGS, () -> notify.accept("Settings selected")));
     }
 

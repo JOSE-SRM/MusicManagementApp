@@ -17,7 +17,11 @@ public final class DashboardPanel extends JPanel {
         setBackground(Theme.BLACK);
         setBorder(Theme.padding(28, 30, 24, 30));
         add(header(importMedia), BorderLayout.NORTH);
-        add(content(notify), BorderLayout.CENTER);
+        JScrollPane scroll = new JScrollPane(content(notify));
+        scroll.setBorder(null);
+        scroll.getVerticalScrollBar().setUnitIncrement(16);
+        scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        add(scroll, BorderLayout.CENTER);
     }
 
     private JComponent header(Runnable importMedia) {
@@ -26,9 +30,9 @@ public final class DashboardPanel extends JPanel {
         JPanel titles = new JPanel();
         titles.setOpaque(false);
         titles.setLayout(new BoxLayout(titles, BoxLayout.Y_AXIS));
-        titles.add(UiFactory.label("Good evening", Theme.TITLE, Theme.TEXT));
+        titles.add(UiFactory.label("Music for the moment you’re in", Theme.TITLE, Theme.TEXT));
         titles.add(Box.createVerticalStrut(5));
-        titles.add(UiFactory.label("Pick up where you left off, or bring in something new.", Theme.BODY, Theme.TEXT_MUTED));
+        titles.add(UiFactory.label("Shape a session, continue listening, or bring in something new.", Theme.BODY, Theme.TEXT_MUTED));
         header.add(titles, BorderLayout.CENTER);
 
         JButton add = UiFactory.button("Add music", AppIcons.of(AppIcons.Kind.PLUS, 16, Theme.BLACK), true);
@@ -42,16 +46,15 @@ public final class DashboardPanel extends JPanel {
         content.setOpaque(false);
         content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
 
-        JPanel quick = new JPanel(new GridLayout(1, 3, 14, 0));
-        quick.setOpaque(false);
-        quick.setMaximumSize(new Dimension(Integer.MAX_VALUE, 126));
-        quick.add(statCard("42", "Tracks", "Across 6 playlists", notify));
-        quick.add(statCard("3 h 18 m", "Listening time", "This week", notify));
-        quick.add(statCard("12", "Recently added", "Ready to explore", notify));
-        content.add(quick);
+        content.setBackground(Theme.BLACK);
+        SessionComposerPanel composer = new SessionComposerPanel(notify);
+        composer.setAlignmentX(Component.LEFT_ALIGNMENT);
+        composer.setMaximumSize(new Dimension(Integer.MAX_VALUE, 380));
+        composer.setPreferredSize(new Dimension(760, 350));
+        content.add(composer);
         content.add(Box.createVerticalStrut(26));
 
-        JLabel recent = UiFactory.label("Recently played", Theme.HEADING, Theme.TEXT);
+        JLabel recent = UiFactory.label("Continue listening", Theme.HEADING, Theme.TEXT);
         recent.setAlignmentX(Component.LEFT_ALIGNMENT);
         content.add(recent);
         content.add(Box.createVerticalStrut(12));
@@ -80,27 +83,9 @@ public final class DashboardPanel extends JPanel {
         JScrollPane scroll = new JScrollPane(table);
         scroll.setAlignmentX(Component.LEFT_ALIGNMENT);
         scroll.setBorder(UiFactory.roundedBorder(Theme.DIVIDER, 14));
+        scroll.setPreferredSize(new Dimension(700, 220));
+        scroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 240));
         content.add(scroll);
         return content;
-    }
-
-    private JPanel statCard(String value, String title, String detail, Consumer<String> notify) {
-        JPanel card = UiFactory.surface(new BorderLayout());
-        card.setBorder(BorderFactory.createCompoundBorder(
-            UiFactory.roundedBorder(Theme.DIVIDER, 16), Theme.padding(18, 20, 18, 20)));
-        JPanel copy = new JPanel();
-        copy.setOpaque(false);
-        copy.setLayout(new BoxLayout(copy, BoxLayout.Y_AXIS));
-        copy.add(UiFactory.label(value, new Font("SansSerif", Font.BOLD, 24), Theme.BLUE));
-        copy.add(Box.createVerticalStrut(6));
-        copy.add(UiFactory.label(title, Theme.BODY_BOLD, Theme.TEXT));
-        copy.add(Box.createVerticalStrut(3));
-        copy.add(UiFactory.label(detail, Theme.SMALL, Theme.TEXT_MUTED));
-        card.add(copy, BorderLayout.CENTER);
-        card.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        card.addMouseListener(new java.awt.event.MouseAdapter() {
-            @Override public void mouseClicked(java.awt.event.MouseEvent event) { notify.accept(title + " opened"); }
-        });
-        return card;
     }
 }

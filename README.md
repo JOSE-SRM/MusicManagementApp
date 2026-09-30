@@ -2,6 +2,12 @@
 
 A responsive, dependency-free Java Swing prototype for managing and browsing music.
 
+## What makes it different
+
+Sangitam is designed as a **listening workspace**, rather than another library browser. Its Session Composer lets a listener describe the next block of time using intent, energy and duration, then creates a visual session recipe. The interaction is implemented with basic Swing models and listeners so it remains approachable for students and reviewers.
+
+Other distinctive details include a searchable `Ctrl/Cmd+K` command palette, a smoothly expanding library, resolution-independent Java2D icons, responsive panel visibility and keyboard focus feedback. See `docs/ARCHITECTURE.md` for an explanation of how each idea maps to a Swing concept.
+
 ## Project structure
 
 ```text

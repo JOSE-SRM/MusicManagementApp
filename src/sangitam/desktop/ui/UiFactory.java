@@ -6,6 +6,8 @@ import javax.swing.border.Border;
 import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.event.FocusAdapter;
+import java.awt.event.FocusEvent;
 
 /** Reusable Swing component styling. IMPORTANT: Add shared control styles here instead of duplicating them in screens. */
 public final class UiFactory {
@@ -17,7 +19,11 @@ public final class UiFactory {
         button.setFont(Theme.BODY_BOLD);
         button.setForeground(primary ? Theme.BLACK : Theme.TEXT);
         button.setBackground(primary ? Theme.BLUE : Theme.SURFACE_RAISED);
-        button.setBorder(Theme.padding(9, 14, 9, 14));
+        Border idleBorder = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(new Color(0, 0, 0, 0)), Theme.padding(8, 13, 8, 13));
+        Border focusBorder = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(Theme.BLUE), Theme.padding(8, 13, 8, 13));
+        button.setBorder(idleBorder);
         button.setFocusPainted(false);
         button.setOpaque(true);
         button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
@@ -26,6 +32,10 @@ public final class UiFactory {
         button.addMouseListener(new MouseAdapter() {
             @Override public void mouseEntered(MouseEvent e) { button.setBackground(hover); }
             @Override public void mouseExited(MouseEvent e) { button.setBackground(normal); }
+        });
+        button.addFocusListener(new FocusAdapter() {
+            @Override public void focusGained(FocusEvent event) { button.setBorder(focusBorder); }
+            @Override public void focusLost(FocusEvent event) { button.setBorder(idleBorder); }
         });
         return button;
     }

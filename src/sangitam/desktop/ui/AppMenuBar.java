@@ -1,7 +1,7 @@
 package sangitam.desktop.ui;
 
 import javax.swing.*;
-import java.awt.event.InputEvent;
+import java.awt.Toolkit;
 import java.awt.event.KeyEvent;
 import java.util.function.Consumer;
 
@@ -9,7 +9,7 @@ import java.util.function.Consumer;
 public final class AppMenuBar extends JMenuBar {
     private static final long serialVersionUID = 1L;
 
-    public AppMenuBar(Runnable openMedia, Consumer<String> notify, Runnable exit) {
+    public AppMenuBar(Runnable openMedia, Runnable quickActions, Consumer<String> notify, Runnable exit) {
         setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, Theme.DIVIDER));
 
         JMenu file = menu("File");
@@ -23,6 +23,8 @@ public final class AppMenuBar extends JMenuBar {
         file.add(item("Exit", AppIcons.Kind.COLLAPSE, KeyEvent.VK_Q, exit));
 
         JMenu edit = menu("Edit");
+        edit.add(item("Quick actions…", AppIcons.Kind.SEARCH, KeyEvent.VK_K, quickActions));
+        edit.addSeparator();
         edit.add(item("Undo", AppIcons.Kind.PREVIOUS, KeyEvent.VK_Z, () -> notify.accept("Undo selected")));
         edit.add(item("Redo", AppIcons.Kind.NEXT, KeyEvent.VK_Y, () -> notify.accept("Redo selected")));
         edit.addSeparator();
@@ -76,7 +78,8 @@ public final class AppMenuBar extends JMenuBar {
         item.setFont(Theme.BODY);
         item.addActionListener(event -> action.run());
         if (keyCode != 0) {
-            item.setAccelerator(KeyStroke.getKeyStroke(keyCode, InputEvent.CTRL_DOWN_MASK));
+            item.setAccelerator(KeyStroke.getKeyStroke(keyCode,
+                Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx()));
         }
         return item;
     }
