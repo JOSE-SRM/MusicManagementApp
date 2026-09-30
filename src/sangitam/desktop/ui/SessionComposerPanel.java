@@ -18,7 +18,8 @@ public final class SessionComposerPanel extends JPanel {
     private final JComboBox<String> duration = new JComboBox<>(new String[] {"25 minutes", "45 minutes", "60 minutes", "90 minutes"});
     private final JCheckBox familiarOnly = new JCheckBox("Prioritise familiar tracks");
     private final JLabel recipeTitle = UiFactory.label("Balanced focus", Theme.HEADING, Theme.TEXT);
-    private final JLabel recipeDetail = UiFactory.label("11 tracks · steady pace · low distraction", Theme.BODY, Theme.TEXT_MUTED);
+    private final JLabel recipeDetail = UiFactory.label(
+        "<html>11 tracks · steady pace<br>Low distraction</html>", Theme.BODY, Theme.TEXT_MUTED);
     private final SoundscapeCanvas canvas = new SoundscapeCanvas();
     private final transient Consumer<String> notify;
 
@@ -74,6 +75,9 @@ public final class SessionComposerPanel extends JPanel {
         durationRow.setOpaque(false);
         durationRow.setAlignmentX(Component.LEFT_ALIGNMENT);
         durationRow.add(fieldLabel("Time available"), BorderLayout.WEST);
+        duration.setFont(Theme.BODY);
+        duration.setForeground(Theme.TEXT);
+        duration.setBackground(Theme.SURFACE_RAISED);
         durationRow.add(duration, BorderLayout.CENTER);
         durationRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 34));
         panel.add(durationRow);
@@ -117,15 +121,24 @@ public final class SessionComposerPanel extends JPanel {
         button.setFont(Theme.BODY_BOLD);
         button.setForeground(Theme.TEXT);
         button.setBackground(selected ? Theme.BLUE_STRONG : Theme.SURFACE_RAISED);
+        button.setOpaque(true);
         button.setFocusPainted(false);
-        button.setBorder(Theme.padding(8, 10, 8, 10));
+        button.setBorder(BorderFactory.createCompoundBorder(
+            UiFactory.roundedBorder(selected ? Theme.BLUE : Theme.DIVIDER, 10), Theme.padding(7, 9, 7, 9)));
         button.addActionListener(event -> {
-            intents.values().forEach(item -> item.setBackground(item.isSelected() ? Theme.BLUE_STRONG : Theme.SURFACE_RAISED));
+            intents.values().forEach(this::styleIntentButton);
             notify.accept(name + " intent selected");
         });
         intents.put(name, button);
         group.add(button);
         row.add(button);
+    }
+
+    private void styleIntentButton(JToggleButton button) {
+        button.setBackground(button.isSelected() ? Theme.BLUE_STRONG : Theme.SURFACE_RAISED);
+        button.setBorder(BorderFactory.createCompoundBorder(
+            UiFactory.roundedBorder(button.isSelected() ? Theme.BLUE : Theme.DIVIDER, 10),
+            Theme.padding(7, 9, 7, 9)));
     }
 
     private JLabel fieldLabel(String text) {
@@ -140,7 +153,7 @@ public final class SessionComposerPanel extends JPanel {
         int tracks = Math.max(6, minutes / 4);
         String familiarity = familiarOnly.isSelected() ? "familiar-first" : "discovery-ready";
         recipeTitle.setText(intent + " · " + energyWord());
-        recipeDetail.setText(tracks + " tracks · " + minutes + " minutes · " + familiarity);
+        recipeDetail.setText("<html>" + tracks + " tracks · " + minutes + " minutes<br>" + familiarity + "</html>");
         canvas.reveal(energy.getValue());
         notify.accept("Session built: " + intent + ", " + minutes + " minutes");
     }

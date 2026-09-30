@@ -19,6 +19,8 @@ public final class DashboardPanel extends JPanel {
         add(header(importMedia), BorderLayout.NORTH);
         JScrollPane scroll = new JScrollPane(content(notify));
         scroll.setBorder(null);
+        scroll.setBackground(Theme.BLACK);
+        scroll.getViewport().setBackground(Theme.BLACK);
         scroll.getVerticalScrollBar().setUnitIncrement(16);
         scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         add(scroll, BorderLayout.CENTER);
@@ -43,7 +45,7 @@ public final class DashboardPanel extends JPanel {
 
     private JComponent content(Consumer<String> notify) {
         JPanel content = new JPanel();
-        content.setOpaque(false);
+        content.setOpaque(true);
         content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
 
         content.setBackground(Theme.BLACK);
@@ -71,7 +73,12 @@ public final class DashboardPanel extends JPanel {
             @Override public boolean isCellEditable(int row, int column) { return false; }
         });
         table.setRowHeight(38);
+        table.setFont(Theme.BODY);
+        table.getTableHeader().setFont(Theme.BODY_BOLD);
+        table.getTableHeader().setPreferredSize(new Dimension(0, 40));
+        table.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
         table.setShowVerticalLines(false);
+        table.setShowHorizontalLines(true);
         table.setIntercellSpacing(new Dimension(0, 1));
         table.setFillsViewportHeight(true);
         table.getTableHeader().setReorderingAllowed(false);
@@ -80,7 +87,14 @@ public final class DashboardPanel extends JPanel {
                 notify.accept("Selected “" + table.getValueAt(table.getSelectedRow(), 1) + "”");
             }
         });
+        table.getColumnModel().getColumn(0).setPreferredWidth(42);
+        table.getColumnModel().getColumn(1).setPreferredWidth(210);
+        table.getColumnModel().getColumn(2).setPreferredWidth(175);
+        table.getColumnModel().getColumn(3).setPreferredWidth(175);
+        table.getColumnModel().getColumn(4).setPreferredWidth(82);
         JScrollPane scroll = new JScrollPane(table);
+        scroll.setBackground(Theme.SURFACE);
+        scroll.getViewport().setBackground(Theme.SURFACE);
         scroll.setAlignmentX(Component.LEFT_ALIGNMENT);
         scroll.setBorder(UiFactory.roundedBorder(Theme.DIVIDER, 14));
         scroll.setPreferredSize(new Dimension(700, 220));

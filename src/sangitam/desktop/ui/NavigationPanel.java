@@ -16,7 +16,7 @@ public final class NavigationPanel extends JPanel {
         setPreferredSize(new Dimension(205, 0));
         setBorder(Theme.padding(22, 16, 18, 16));
 
-        JLabel brand = UiFactory.label("Sangitam", new Font("SansSerif", Font.BOLD, 22), Theme.BLUE);
+        JLabel brand = UiFactory.label("Sangitam", Theme.font(Font.BOLD, 23), Theme.BLUE);
         brand.setIcon(AppIcons.of(AppIcons.Kind.MUSIC, 24, Theme.BLUE));
         brand.setIconTextGap(10);
         brand.setAlignmentX(Component.LEFT_ALIGNMENT);
