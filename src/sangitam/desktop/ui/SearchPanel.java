@@ -2,13 +2,16 @@ package sangitam.desktop.ui;
 
 import sangitam.desktop.library.TrackSearch;
 import sangitam.desktop.model.Track;
+import sangitam.desktop.model.TrackTags;
 
 import javax.swing.*;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import java.awt.*;
 import java.awt.event.KeyEvent;
+import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 
 /** Searches the same imported tracks shown by the dashboard and library. */
@@ -20,6 +23,7 @@ public final class SearchPanel extends JPanel {
     private final DefaultListModel<String> albumsModel = new DefaultListModel<>();
     private final DefaultListModel<String> artistsModel = new DefaultListModel<>();
     private final JTabbedPane tabs = new JTabbedPane();
+    private final TrackCellRenderer songRenderer = new TrackCellRenderer();
     private final Timer debounce;
     private List<Track> library = List.of();
     private SwingWorker<TrackSearch.Results, Void> activeSearch;
@@ -35,13 +39,14 @@ public final class SearchPanel extends JPanel {
         search.setFont(Theme.BODY);
         search.setBorder(BorderFactory.createCompoundBorder(
             UiFactory.roundedBorder(Theme.DIVIDER, 14), Theme.padding(11, 14, 11, 14)));
-        search.setToolTipText("Search titles, artists and albums");
+        search.setToolTipText("Search titles, artists, albums and genre tags");
         top.add(search, BorderLayout.CENTER);
         top.add(count, BorderLayout.SOUTH);
         add(top, BorderLayout.NORTH);
 
         JList<Track> songs = new JList<>(songsModel);
-        songs.setFixedCellHeight(42);
+        songs.setFixedCellHeight(56);
+        songs.setCellRenderer(songRenderer);
         songs.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         songs.addMouseListener(new java.awt.event.MouseAdapter() {
             @Override public void mouseClicked(java.awt.event.MouseEvent event) {
@@ -75,8 +80,9 @@ public final class SearchPanel extends JPanel {
         });
     }
 
-    public void setTracks(List<Track> tracks) {
+    public void setTracks(List<Track> tracks, Map<Path, TrackTags> tags) {
         library = List.copyOf(tracks);
+        songRenderer.setTags(tags);
         debounce.stop();
         runSearch();
     }

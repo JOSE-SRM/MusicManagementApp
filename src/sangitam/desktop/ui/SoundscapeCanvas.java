@@ -11,8 +11,9 @@ import java.awt.RenderingHints;
 import java.awt.geom.Path2D;
 
 /**
- * A dependency-free visual signature for a generated listening session.
- * IMPORTANT: The canvas paints deterministic wave bands from the energy value; it is decorative and not audio data.
+ * A dependency-free visual signature for a requested listening session.
+ * IMPORTANT: The canvas paints deterministic wave bands from the energy control;
+ * it is decorative and never claims to show the actual audio waveform.
  */
 public final class SoundscapeCanvas extends JPanel {
     private static final long serialVersionUID = 1L;
@@ -23,7 +24,7 @@ public final class SoundscapeCanvas extends JPanel {
     public SoundscapeCanvas() {
         setOpaque(false);
         setPreferredSize(new Dimension(300, 150));
-        getAccessibleContext().setAccessibleName("Visual preview of the generated listening session");
+        getAccessibleContext().setAccessibleName("Decorative visualization of the chosen session energy");
     }
 
     public void reveal(int newEnergy) {

@@ -1,5 +1,7 @@
 package sangitam.desktop.ui;
 
+import sangitam.desktop.session.SessionPlanner;
+
 import javax.swing.*;
 import java.awt.*;
 import java.util.LinkedHashMap;
@@ -7,7 +9,7 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 /**
- * Sangitam's signature interaction: shape a listening queue by intent, energy and available time.
+ * Sangitam's signature interaction: request a queue by intent, energy and available time.
  * IMPORTANT: The implementation is intentionally ordinary Swing—models, listeners and a custom-painted panel.
  */
 public final class SessionComposerPanel extends JPanel {
@@ -19,13 +21,16 @@ public final class SessionComposerPanel extends JPanel {
     private final JCheckBox familiarOnly = new JCheckBox("Prioritise familiar tracks");
     private final JLabel recipeTitle = UiFactory.label("Balanced focus", Theme.HEADING, Theme.TEXT);
     private final JLabel recipeDetail = UiFactory.label(
-        "<html>Example recipe · steady pace<br>Track selection is coming next</html>", Theme.BODY, Theme.TEXT_MUTED);
+        "<html>Choose an intent and build from your library.<br>You can edit the queue below.</html>",
+        Theme.BODY, Theme.TEXT_MUTED);
     private final SoundscapeCanvas canvas = new SoundscapeCanvas();
     private final transient Consumer<String> notify;
+    private final transient Consumer<SessionPlanner.Request> onBuild;
 
-    public SessionComposerPanel(Consumer<String> notify) {
+    public SessionComposerPanel(Consumer<String> notify, Consumer<SessionPlanner.Request> onBuild) {
         super(new BorderLayout(24, 0));
         this.notify = notify;
+        this.onBuild = onBuild;
         setBackground(Theme.SURFACE);
         setBorder(BorderFactory.createCompoundBorder(
             UiFactory.roundedBorder(Theme.DIVIDER, 20), Theme.padding(24, 26, 24, 26)));
@@ -89,7 +94,7 @@ public final class SessionComposerPanel extends JPanel {
         panel.add(familiarOnly);
         panel.add(Box.createVerticalStrut(17));
 
-        JButton build = UiFactory.button("Preview session", AppIcons.of(AppIcons.Kind.PLAY, 15, Theme.BLACK), true);
+        JButton build = UiFactory.button("Build my session", AppIcons.of(AppIcons.Kind.PLAY, 15, Theme.BLACK), true);
         build.setAlignmentX(Component.LEFT_ALIGNMENT);
         build.setMaximumSize(new Dimension(Integer.MAX_VALUE, 42));
         build.addActionListener(event -> buildSession());
@@ -150,13 +155,17 @@ public final class SessionComposerPanel extends JPanel {
             .filter(entry -> entry.getValue().isSelected())
             .map(Map.Entry::getKey).findFirst().orElse("Focus");
         int minutes = Integer.parseInt(((String) duration.getSelectedItem()).split(" ")[0]);
-        int tracks = Math.max(6, minutes / 4);
-        String familiarity = familiarOnly.isSelected() ? "familiar-first" : "discovery-ready";
         recipeTitle.setText(intent + " · " + energyWord());
-        recipeDetail.setText("<html>About " + tracks + " tracks · " + minutes
-            + " minutes<br>" + familiarity + " · preview only</html>");
+        recipeDetail.setText("Choosing tracks from your library…");
         canvas.reveal(energy.getValue());
-        notify.accept("Session preview updated · track selection is coming next");
+        onBuild.accept(new SessionPlanner.Request(SessionPlanner.Intent.valueOf(intent.toUpperCase(java.util.Locale.ROOT)),
+            energy.getValue(), minutes, familiarOnly.isSelected()));
+    }
+
+    public void showPlan(SessionPlanner.Plan plan) {
+        recipeDetail.setText(plan.choices().isEmpty() ? "No playable tracks found. Add music first."
+            : "<html>" + plan.choices().size() + " tracks · about "
+                + Math.round(plan.estimatedSeconds() / 60.0) + " minutes<br>See the editable queue below</html>");
     }
 
     private String energyWord() {

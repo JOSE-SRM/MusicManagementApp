@@ -1,37 +1,60 @@
 package sangitam.desktop.library;
 
 import sangitam.desktop.model.Track;
+import sangitam.desktop.model.TrackTags;
 import sangitam.desktop.storage.LibraryStore;
 
 import javax.swing.SwingWorker;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
-/** Coordinates background scanning and storage, then publishes one library snapshot on the Swing thread. */
+/** Keeps file decoding and SQLite work off Swing, then publishes immutable catalog snapshots on its event thread. */
 public final class LibraryService {
-    public record ImportSummary(int added, int indexed, int skipped, List<String> errors, boolean cancelled) { }
-    private record Snapshot(List<Track> tracks, long revision) { }
+    public record ImportSummary(int added, int indexed, int skipped, int unanalyzed,
+                                List<String> errors, boolean cancelled) { }
+    public record Catalog(List<Track> tracks, Map<Path, TrackTags> tags, Map<Path, Integer> playCounts) {
+        public Catalog {
+            tracks = List.copyOf(tracks);
+            tags = Map.copyOf(tags);
+            playCounts = Map.copyOf(playCounts);
+        }
+        public TrackTags tagsFor(Track track) { return tags.getOrDefault(track.path(), TrackTags.pending()); }
+        public int playsFor(Track track) { return playCounts.getOrDefault(track.path(), 0); }
+    }
+    private record Snapshot(Catalog catalog, long revision) { }
 
     private final LibraryStore store;
     private final LibraryScanner scanner = new LibraryScanner();
-    private final List<Consumer<List<Track>>> listeners = new ArrayList<>();
+    private final AudioAnalyzer analyzer = new AudioAnalyzer();
+    private final List<Consumer<List<Track>>> trackListeners = new ArrayList<>();
+    private final List<Consumer<Catalog>> catalogListeners = new ArrayList<>();
     private final AtomicLong revisions = new AtomicLong();
-    private List<Track> tracks = List.of();
+    private Catalog catalog = new Catalog(List.of(), Map.of(), Map.of());
     private long publishedRevision = -1;
 
     public LibraryService(LibraryStore store) { this.store = store; }
 
-    public List<Track> snapshot() { return tracks; }
+    public List<Track> snapshot() { return catalog.tracks(); }
+    public Catalog catalog() { return catalog; }
 
+    /** Existing simple listeners remain useful for screens and stage-one callers. */
     public void addListener(Consumer<List<Track>> listener) {
-        listeners.add(listener);
-        listener.accept(tracks);
+        trackListeners.add(listener);
+        listener.accept(catalog.tracks());
+    }
+
+    public void addCatalogListener(Consumer<Catalog> listener) {
+        catalogListeners.add(listener);
+        listener.accept(catalog);
     }
 
     public void loadInitial(Consumer<String> report) {
@@ -39,17 +62,48 @@ public final class LibraryService {
             @Override protected Snapshot doInBackground() throws Exception {
                 synchronized (store) {
                     store.initialize();
-                    return new Snapshot(store.loadAll(), revisions.get());
+                    return new Snapshot(readCatalog(), revisions.get());
                 }
             }
 
             @Override protected void done() {
                 try {
                     Snapshot loaded = get();
-                    publishSnapshot(loaded.tracks(), loaded.revision());
-                    if (!tracks.isEmpty()) report.accept("Loaded " + tracks.size() + " saved tracks");
+                    publishSnapshot(loaded);
+                    if (!catalog.tracks().isEmpty()) report.accept("Loaded " + catalog.tracks().size() + " saved tracks");
+                    analyzeMissing(report);
                 } catch (Exception error) {
                     report.accept("Library could not be loaded: " + cause(error).getMessage());
+                }
+            }
+        }.execute();
+    }
+
+    /** Reanalyzes older libraries in the background after their tracks are already visible. */
+    private void analyzeMissing(Consumer<String> report) {
+        Catalog input = catalog;
+        List<Track> missing = input.tracks().stream().filter(track -> !fresh(input.tagsFor(track), track.path()))
+            .filter(track -> Files.isRegularFile(track.path())).toList();
+        if (missing.isEmpty()) return;
+        report.accept("Analyzing " + missing.size() + " tracks in the background");
+        new SwingWorker<Snapshot, Void>() {
+            @Override protected Snapshot doInBackground() throws Exception {
+                for (Track track : missing) {
+                    if (isCancelled()) break;
+                    TrackTags tags = analyzer.analyze(track.path());
+                    synchronized (store) { store.saveTags(track.path(), tags); }
+                }
+                synchronized (store) { return changedSnapshot(); }
+            }
+
+            @Override protected void done() {
+                try {
+                    publishSnapshot(get());
+                    long unavailable = missing.stream().filter(track -> !catalog.tagsFor(track).analyzed()).count();
+                    report.accept(unavailable == 0 ? "Music analysis finished"
+                        : "Analysis finished; " + unavailable + " tracks could not be measured");
+                } catch (Exception error) {
+                    report.accept("Some tracks could not be analyzed: " + cause(error).getMessage());
                 }
             }
         }.execute();
@@ -59,38 +113,51 @@ public final class LibraryService {
         List<Path> sources, boolean recursive, Consumer<LibraryScanner.Progress> onProgress,
         Consumer<ImportSummary> onDone, Consumer<String> onError) {
         SwingWorker<ImportSummary, LibraryScanner.Progress> worker = new SwingWorker<>() {
-            private List<Track> savedTracks = List.of();
-            private long savedRevision;
+            private Snapshot saved;
 
             @Override protected ImportSummary doInBackground() throws Exception {
                 LibraryScanner.Result result = scanner.scan(sources, recursive, this::publish, this::isCancelled);
-                if (isCancelled()) return new ImportSummary(0, 0, result.skipped(), result.errors(), true);
+                if (isCancelled()) return new ImportSummary(0, 0, result.skipped(), 0, result.errors(), true);
                 int added;
+                Map<Path, TrackTags> existingTags;
                 synchronized (store) {
                     store.initialize();
+                    Catalog before = readCatalog();
                     Set<Path> existing = new HashSet<>();
-                    for (Track track : store.loadAll()) existing.add(track.path());
+                    before.tracks().forEach(track -> existing.add(track.path()));
                     added = (int) result.tracks().stream().filter(track -> !existing.contains(track.path())).count();
-                    if (isCancelled()) return new ImportSummary(0, 0, result.skipped(), result.errors(), true);
                     store.saveAll(result.tracks());
-                    savedTracks = store.loadAll();
-                    savedRevision = revisions.incrementAndGet();
+                    existingTags = before.tags();
                 }
-                return new ImportSummary(added, result.tracks().size(), result.skipped(), result.errors(), false);
+                int unanalyzed = 0;
+                for (int i = 0; i < result.tracks().size(); i++) {
+                    if (isCancelled()) break;
+                    Track track = result.tracks().get(i);
+                    TrackTags tags = existingTags.getOrDefault(track.path(), TrackTags.pending());
+                    if (!fresh(tags, track.path())) {
+                        tags = analyzer.analyze(track.path());
+                        synchronized (store) { store.saveTags(track.path(), tags); }
+                    }
+                    if (!tags.analyzed()) unanalyzed++;
+                    publish(new LibraryScanner.Progress(i + 1, result.tracks().size(), track.path(), "Analyzing"));
+                }
+                synchronized (store) { saved = changedSnapshot(); }
+                return new ImportSummary(added, result.tracks().size(), result.skipped(), unanalyzed,
+                    result.errors(), false);
             }
 
-            @Override protected void process(List<LibraryScanner.Progress> progress) {
-                if (!progress.isEmpty()) onProgress.accept(progress.get(progress.size() - 1));
+            @Override protected void process(List<LibraryScanner.Progress> updates) {
+                if (!updates.isEmpty()) onProgress.accept(updates.get(updates.size() - 1));
             }
 
             @Override protected void done() {
                 if (isCancelled()) {
-                    onDone.accept(new ImportSummary(0, 0, 0, List.of(), true));
+                    onDone.accept(new ImportSummary(0, 0, 0, 0, List.of(), true));
                     return;
                 }
                 try {
                     ImportSummary summary = get();
-                    if (!summary.cancelled()) publishSnapshot(savedTracks, savedRevision);
+                    publishSnapshot(saved);
                     onDone.accept(summary);
                 } catch (Exception error) {
                     onError.accept("Import failed: " + cause(error).getMessage());
@@ -101,11 +168,49 @@ public final class LibraryService {
         return worker;
     }
 
-    private void publishSnapshot(List<Track> updated, long revision) {
-        if (revision < publishedRevision) return;
-        publishedRevision = revision;
-        tracks = List.copyOf(updated);
-        for (Consumer<List<Track>> listener : listeners) listener.accept(tracks);
+    /** A successful play is counted once by MainFrame, never on the Swing thread. */
+    public void recordPlay(Path path, Consumer<String> onError) {
+        new SwingWorker<Snapshot, Void>() {
+            @Override protected Snapshot doInBackground() throws Exception {
+                synchronized (store) {
+                    store.recordPlay(path);
+                    return changedSnapshot();
+                }
+            }
+            @Override protected void done() {
+                try { publishSnapshot(get()); }
+                catch (Exception error) { onError.accept("Could not save play history: " + cause(error).getMessage()); }
+            }
+        }.execute();
+    }
+
+    private boolean fresh(TrackTags tags, Path path) {
+        try { return tags.matches(Files.size(path), Files.getLastModifiedTime(path).toMillis()); }
+        catch (Exception error) { return false; }
+    }
+
+    private Catalog readCatalog() throws Exception {
+        List<Track> tracks = new ArrayList<>();
+        Map<Path, TrackTags> tags = new HashMap<>();
+        Map<Path, Integer> plays = new HashMap<>();
+        for (LibraryStore.CatalogEntry entry : store.loadCatalog()) {
+            tracks.add(entry.track());
+            tags.put(entry.track().path(), entry.tags());
+            plays.put(entry.track().path(), entry.playCount());
+        }
+        return new Catalog(tracks, tags, plays);
+    }
+
+    private Snapshot changedSnapshot() throws Exception {
+        return new Snapshot(readCatalog(), revisions.incrementAndGet());
+    }
+
+    private void publishSnapshot(Snapshot snapshot) {
+        if (snapshot.revision() < publishedRevision) return;
+        publishedRevision = snapshot.revision();
+        catalog = snapshot.catalog();
+        for (Consumer<List<Track>> listener : trackListeners) listener.accept(catalog.tracks());
+        for (Consumer<Catalog> listener : catalogListeners) listener.accept(catalog);
     }
 
     private Throwable cause(Exception error) {

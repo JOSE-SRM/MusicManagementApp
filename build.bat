@@ -7,6 +7,12 @@ rem hundreds of misleading "cannot find symbol" errors in other Java files.
 for %%F in (AppIcons.java Theme.java UiFactory.java NotificationCenter.java CommandPaletteDialog.java SoundscapeCanvas.java) do (
     if not exist "src\sangitam\desktop\ui\%%F" goto :missingSources
 )
+for %%F in (SessionQueuePanel.java TrackCellRenderer.java) do (
+    if not exist "src\sangitam\desktop\ui\%%F" goto :missingSources
+)
+if not exist "src\sangitam\desktop\library\AudioAnalyzer.java" goto :missingSources
+if not exist "src\sangitam\desktop\model\TrackTags.java" goto :missingSources
+if not exist "src\sangitam\desktop\session\SessionPlanner.java" goto :missingSources
 
 call mvnw.cmd -q -DskipTests clean compile
 if errorlevel 1 goto :error

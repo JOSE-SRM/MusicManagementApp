@@ -1,6 +1,7 @@
 package sangitam.desktop.ui;
 
 import sangitam.desktop.model.Track;
+import sangitam.desktop.session.SessionPlanner;
 
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
@@ -10,7 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 
-/** Home screen: the Session Composer and a truthful preview of indexed local music. */
+/** Home screen: real session builder, editable queue, and a preview of indexed local music. */
 public final class DashboardPanel extends JPanel {
     private static final long serialVersionUID = 1L;
     private final DefaultTableModel model = new DefaultTableModel(
@@ -19,13 +20,16 @@ public final class DashboardPanel extends JPanel {
     };
     private final List<Track> shown = new ArrayList<>();
     private final JLabel libraryCaption = UiFactory.label("Import music to fill your library.", Theme.SMALL, Theme.TEXT_MUTED);
+    private SessionComposerPanel composer;
+    private SessionQueuePanel queue;
 
-    public DashboardPanel(Runnable importMedia, Consumer<Track> onPlay, Consumer<String> notify) {
+    public DashboardPanel(Runnable importMedia, Consumer<Track> onPlay, Consumer<String> notify,
+                          Consumer<SessionPlanner.Request> onBuild, SessionQueuePanel.Actions queueActions) {
         super(new BorderLayout(0, 22));
         setBackground(Theme.BLACK);
         setBorder(Theme.padding(28, 30, 24, 30));
         add(header(importMedia), BorderLayout.NORTH);
-        JScrollPane scroll = new JScrollPane(content(onPlay, notify));
+        JScrollPane scroll = new JScrollPane(content(onPlay, notify, onBuild, queueActions));
         scroll.setBorder(null);
         scroll.getViewport().setBackground(Theme.BLACK);
         scroll.getVerticalScrollBar().setUnitIncrement(16);
@@ -34,6 +38,7 @@ public final class DashboardPanel extends JPanel {
     }
 
     public void setTracks(List<Track> tracks) {
+        queue.setAvailableTracks(tracks);
         shown.clear();
         shown.addAll(tracks.subList(0, Math.min(8, tracks.size())));
         model.setRowCount(0);
@@ -43,6 +48,13 @@ public final class DashboardPanel extends JPanel {
         }
         libraryCaption.setText(tracks.isEmpty() ? "Import music to fill your library."
             : tracks.size() + " tracks in your library · double-click a row to play");
+    }
+
+    public void showPlan(SessionPlanner.Plan plan) {
+        composer.showPlan(plan);
+        queue.setPlan(plan);
+        SwingUtilities.invokeLater(() -> queue.scrollRectToVisible(
+            new Rectangle(0, 0, queue.getWidth(), queue.getHeight())));
     }
 
     private JComponent header(Runnable importMedia) {
@@ -61,15 +73,24 @@ public final class DashboardPanel extends JPanel {
         return header;
     }
 
-    private JComponent content(Consumer<Track> onPlay, Consumer<String> notify) {
+    private JComponent content(Consumer<Track> onPlay, Consumer<String> notify,
+                               Consumer<SessionPlanner.Request> onBuild,
+                               SessionQueuePanel.Actions queueActions) {
         JPanel content = new JPanel();
         content.setBackground(Theme.BLACK);
         content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
-        SessionComposerPanel composer = new SessionComposerPanel(notify);
+        composer = new SessionComposerPanel(notify, onBuild);
         composer.setAlignmentX(Component.LEFT_ALIGNMENT);
         composer.setMaximumSize(new Dimension(Integer.MAX_VALUE, 380));
         composer.setPreferredSize(new Dimension(760, 350));
         content.add(composer);
+        content.add(Box.createVerticalStrut(26));
+
+        queue = new SessionQueuePanel(queueActions);
+        queue.setAlignmentX(Component.LEFT_ALIGNMENT);
+        queue.setPreferredSize(new Dimension(760, 330));
+        queue.setMaximumSize(new Dimension(Integer.MAX_VALUE, 350));
+        content.add(queue);
         content.add(Box.createVerticalStrut(26));
 
         JLabel heading = UiFactory.label("In your library", Theme.HEADING, Theme.TEXT);

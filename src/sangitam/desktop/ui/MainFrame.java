@@ -5,6 +5,7 @@ import sangitam.desktop.model.Track;
 import sangitam.desktop.playback.JavaFxPlayerService;
 import sangitam.desktop.playback.PlaybackState;
 import sangitam.desktop.playback.PlayerService;
+import sangitam.desktop.session.SessionPlanner;
 import sangitam.desktop.storage.AppPaths;
 import sangitam.desktop.storage.LibraryStore;
 
@@ -15,6 +16,7 @@ import java.awt.event.ComponentEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.nio.file.Files;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,12 +29,18 @@ public final class MainFrame extends JFrame {
     private final NotificationCenter notifications = new NotificationCenter();
     private final LibraryService library = new LibraryService(new LibraryStore(AppPaths.libraryDatabase()));
     private final PlayerService player = new JavaFxPlayerService();
+    private final SessionPlanner planner = new SessionPlanner();
     private DashboardPanel dashboard;
     private SearchPanel search;
     private LibraryPanel libraryPanel;
     private PlayerBar playerBar;
     private List<Track> tracks = List.of();
     private Track selectedTrack;
+    private List<SessionPlanner.Choice> sessionQueue = List.of();
+    private int sessionIndex = -1;
+    private boolean sessionActive;
+    private long playGeneration;
+    private long countedGeneration = -1;
     private boolean compactLayout;
 
     public MainFrame() {
@@ -52,7 +60,7 @@ public final class MainFrame extends JFrame {
         addWindowListener(new WindowAdapter() {
             @Override public void windowClosing(WindowEvent event) { player.close(); }
         });
-        library.addListener(this::onLibraryChanged);
+        library.addCatalogListener(this::onLibraryChanged);
         player.setListener(this::onPlaybackState);
         library.loadInitial(notifications::show);
     }
@@ -61,7 +69,14 @@ public final class MainFrame extends JFrame {
         JPanel root = new JPanel(new BorderLayout());
         root.setBackground(Theme.BLACK);
         screens.setBackground(Theme.BLACK);
-        dashboard = new DashboardPanel(this::openImportDialog, this::playTrack, notifications::show);
+        dashboard = new DashboardPanel(this::openImportDialog, this::playTrack, notifications::show,
+            this::buildSession, new SessionQueuePanel.Actions() {
+                @Override public void start(List<SessionPlanner.Choice> choices) { startSession(choices); }
+                @Override public void play(SessionPlanner.Choice choice, List<SessionPlanner.Choice> choices) {
+                    startSessionAt(choice, choices);
+                }
+                @Override public void edited(List<SessionPlanner.Choice> choices) { editSession(choices); }
+            });
         search = new SearchPanel(this::playTrack);
         screens.add(dashboard, "home");
         screens.add(search, "search");
@@ -89,11 +104,12 @@ public final class MainFrame extends JFrame {
         return root;
     }
 
-    private void onLibraryChanged(List<Track> updated) {
+    private void onLibraryChanged(LibraryService.Catalog catalog) {
+        List<Track> updated = catalog.tracks();
         tracks = updated;
         dashboard.setTracks(updated);
-        search.setTracks(updated);
-        libraryPanel.setTracks(updated);
+        search.setTracks(updated, catalog.tags());
+        libraryPanel.setTracks(updated, catalog.tags());
         if (selectedTrack != null) {
             selectedTrack = updated.stream().filter(track -> track.path().equals(selectedTrack.path()))
                 .findFirst().orElse(null);
@@ -104,23 +120,124 @@ public final class MainFrame extends JFrame {
     private void onPlaybackState(PlaybackState state) {
         playerBar.setState(state);
         if (state.status() == PlaybackState.Status.ERROR) notifications.show(state.error());
+        if (state.status() == PlaybackState.Status.PLAYING && state.track() != null
+            && selectedTrack != null && state.track().path().equals(selectedTrack.path())
+            && countedGeneration != playGeneration) {
+            countedGeneration = playGeneration;
+            library.recordPlay(state.track().path(), notifications::show);
+        }
+        if (state.status() == PlaybackState.Status.ERROR && sessionActive
+            && state.track() != null && selectedTrack != null
+            && state.track().path().equals(selectedTrack.path())) {
+            if (sessionIndex + 1 < sessionQueue.size()) SwingUtilities.invokeLater(this::nextTrack);
+            else sessionActive = false;
+        }
         if (state.status() == PlaybackState.Status.ENDED && state.track() != null
-            && state.track().equals(selectedTrack)) {
-            int index = tracks.indexOf(state.track());
-            if (index >= 0 && index + 1 < tracks.size()) playTrack(tracks.get(index + 1));
+            && selectedTrack != null && state.track().path().equals(selectedTrack.path())) {
+            if (sessionActive) {
+                if (sessionIndex + 1 < sessionQueue.size()) playSessionIndex(sessionIndex + 1);
+                else {
+                    sessionActive = false;
+                    notifications.show("Session complete");
+                }
+            } else {
+                int index = indexOf(tracks, state.track());
+                if (index >= 0 && index + 1 < tracks.size()) playTrack(tracks.get(index + 1));
+            }
         }
     }
 
     private void playTrack(Track track) {
+        sessionActive = false;
         selectedTrack = track;
+        playGeneration++;
         player.play(track);
+    }
+
+    private void buildSession(SessionPlanner.Request request) {
+        LibraryService.Catalog source = library.catalog();
+        if (source.tracks().isEmpty()) {
+            dashboard.showPlan(new SessionPlanner.Plan(List.of(), request.minutes(), 0));
+            notifications.show("Add music to your library before building a session");
+            return;
+        }
+        notifications.show("Choosing music for your session…");
+        new SwingWorker<SessionPlanner.Plan, Void>() {
+            @Override protected SessionPlanner.Plan doInBackground() {
+                List<Track> playable = source.tracks().stream()
+                    .filter(track -> Files.isRegularFile(track.path())).toList();
+                return planner.build(request, playable, source.tags(), source.playCounts());
+            }
+            @Override protected void done() {
+                try {
+                    SessionPlanner.Plan plan = get();
+                    sessionQueue = plan.choices();
+                    sessionActive = false;
+                    sessionIndex = -1;
+                    dashboard.showPlan(plan);
+                    notifications.show(plan.choices().isEmpty() ? "No playable tracks found"
+                        : "Session ready: " + plan.choices().size() + " tracks");
+                } catch (Exception error) {
+                    dashboard.showPlan(new SessionPlanner.Plan(List.of(), request.minutes(), 0));
+                    notifications.show("Could not build session: " + error.getMessage());
+                }
+            }
+        }.execute();
+    }
+
+    private void startSession(List<SessionPlanner.Choice> choices) {
+        if (choices.isEmpty()) { notifications.show("Build or add a track first"); return; }
+        sessionQueue = List.copyOf(choices);
+        sessionActive = true;
+        playSessionIndex(0);
+    }
+
+    private void startSessionAt(SessionPlanner.Choice choice, List<SessionPlanner.Choice> choices) {
+        sessionQueue = List.copyOf(choices);
+        sessionActive = true;
+        int index = sessionQueue.indexOf(choice);
+        playSessionIndex(Math.max(0, index));
+    }
+
+    private void editSession(List<SessionPlanner.Choice> choices) {
+        int previousIndex = sessionIndex;
+        sessionQueue = List.copyOf(choices);
+        if (!sessionActive || selectedTrack == null) return;
+        sessionIndex = indexOfChoices(selectedTrack);
+        if (sessionIndex < 0) {
+            if (sessionQueue.isEmpty()) sessionActive = false;
+            else sessionIndex = Math.min(previousIndex - 1, sessionQueue.size() - 1);
+        }
+    }
+
+    private void playSessionIndex(int index) {
+        if (index < 0 || index >= sessionQueue.size()) return;
+        sessionIndex = index;
+        selectedTrack = sessionQueue.get(index).track();
+        playGeneration++;
+        player.play(selectedTrack);
+        notifications.show("Session " + (index + 1) + " of " + sessionQueue.size() + " · "
+            + selectedTrack.title());
+    }
+
+    private int indexOfChoices(Track track) {
+        for (int i = 0; i < sessionQueue.size(); i++) {
+            if (sessionQueue.get(i).track().path().equals(track.path())) return i;
+        }
+        return -1;
+    }
+
+    private int indexOf(List<Track> list, Track track) {
+        for (int i = 0; i < list.size(); i++) if (list.get(i).path().equals(track.path())) return i;
+        return -1;
     }
 
     private void togglePlayback() {
         PlaybackState state = player.state();
         if (state.status() == PlaybackState.Status.PLAYING) {
             player.pause();
-        } else if (state.track() != null && state.track().equals(selectedTrack)
+        } else if (state.track() != null && selectedTrack != null
+            && state.track().path().equals(selectedTrack.path())
             && (state.status() == PlaybackState.Status.PAUSED || state.status() == PlaybackState.Status.ENDED)) {
             player.resume();
         } else if (selectedTrack != null) {
@@ -131,15 +248,25 @@ public final class MainFrame extends JFrame {
     }
 
     private void nextTrack() {
+        if (sessionActive) {
+            if (sessionIndex + 1 < sessionQueue.size()) playSessionIndex(sessionIndex + 1);
+            else notifications.show("Last track in session");
+            return;
+        }
         if (tracks.isEmpty()) { notifications.show("Add music to your library first"); return; }
-        int index = tracks.indexOf(selectedTrack);
+        int index = selectedTrack == null ? -1 : indexOf(tracks, selectedTrack);
         if (index + 1 >= tracks.size()) { notifications.show("End of library"); return; }
         playTrack(tracks.get(index + 1));
     }
 
     private void previousTrack() {
+        if (sessionActive) {
+            if (sessionIndex > 0) playSessionIndex(sessionIndex - 1);
+            else player.seek(0);
+            return;
+        }
         if (tracks.isEmpty()) { notifications.show("Add music to your library first"); return; }
-        int index = tracks.indexOf(selectedTrack);
+        int index = selectedTrack == null ? -1 : indexOf(tracks, selectedTrack);
         if (index <= 0) { player.seek(0); return; }
         playTrack(tracks.get(index - 1));
     }

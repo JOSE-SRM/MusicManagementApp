@@ -29,6 +29,12 @@
             <artifactId>jaudiotagger</artifactId>
             <version>3.0.1</version>
         </dependency>
+        <!-- Makes MP3 decoding available through the standard Java Sound stream API for analysis. -->
+        <dependency>
+            <groupId>com.googlecode.soundlibs</groupId>
+            <artifactId>mp3spi</artifactId>
+            <version>1.9.5.4</version>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>

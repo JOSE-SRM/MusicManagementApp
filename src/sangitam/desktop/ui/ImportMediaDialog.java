@@ -133,7 +133,11 @@ public final class ImportMediaDialog extends JDialog {
     }
 
     private void onProgress(LibraryScanner.Progress current) {
-        status.setText("Checked " + current.visited() + " files · found " + current.accepted() + " tracks");
+        if (current.phase().equals("Analyzing")) {
+            status.setText("Analyzed " + current.visited() + " of " + current.accepted() + " tracks…");
+        } else {
+            status.setText("Checked " + current.visited() + " files · found " + current.accepted() + " tracks");
+        }
     }
 
     private void onComplete(LibraryService.ImportSummary result) {
@@ -143,7 +147,8 @@ public final class ImportMediaDialog extends JDialog {
             status.setText("Import cancelled.");
         } else {
             status.setText("Added " + result.added() + " new tracks · indexed " + result.indexed()
-                + " · skipped " + result.skipped());
+                + " · skipped " + result.skipped()
+                + (result.unanalyzed() == 0 ? "" : " · " + result.unanalyzed() + " without audio tags"));
             notify.accept("Library updated: " + result.added() + " new tracks");
         }
         if (!result.errors().isEmpty()) {

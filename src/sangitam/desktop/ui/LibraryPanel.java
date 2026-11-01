@@ -1,12 +1,14 @@
 package sangitam.desktop.ui;
 
 import sangitam.desktop.model.Track;
+import sangitam.desktop.model.TrackTags;
 
 import javax.swing.*;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
 import java.awt.*;
 import java.awt.event.KeyEvent;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -20,6 +22,7 @@ public final class LibraryPanel extends JPanel {
     private final DefaultMutableTreeNode treeRoot = new DefaultMutableTreeNode("Imported folders");
     private final DefaultTreeModel treeModel = new DefaultTreeModel(treeRoot);
     private final JLabel count = UiFactory.label("0 tracks in library", Theme.SMALL, Theme.TEXT_MUTED);
+    private final TrackCellRenderer songRenderer = new TrackCellRenderer();
     private final JButton expandButton;
     private boolean expanded;
     private Timer animation;
@@ -40,7 +43,8 @@ public final class LibraryPanel extends JPanel {
         add(header, BorderLayout.NORTH);
 
         JList<Track> songs = new JList<>(songModel);
-        songs.setFixedCellHeight(42);
+        songs.setFixedCellHeight(56);
+        songs.setCellRenderer(songRenderer);
         songs.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         songs.addMouseListener(new java.awt.event.MouseAdapter() {
             @Override public void mouseClicked(java.awt.event.MouseEvent event) {
@@ -82,7 +86,8 @@ public final class LibraryPanel extends JPanel {
         add(footer, BorderLayout.SOUTH);
     }
 
-    public void setTracks(List<Track> tracks) {
+    public void setTracks(List<Track> tracks, Map<Path, TrackTags> tags) {
+        songRenderer.setTags(tags);
         songModel.clear();
         songModel.addAll(tracks);
         count.setText(tracks.size() + (tracks.size() == 1 ? " track in library" : " tracks in library"));

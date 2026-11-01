@@ -23,7 +23,11 @@ import java.util.function.Consumer;
 
 /** Scans user-selected files and folders in a worker thread; it never mutates Swing components. */
 public final class LibraryScanner {
-    public record Progress(int visited, int accepted, Path current) { }
+    public record Progress(int visited, int accepted, Path current, String phase) {
+        public Progress(int visited, int accepted, Path current) {
+            this(visited, accepted, current, "Scanning");
+        }
+    }
     public record Result(List<Track> tracks, int skipped, List<String> errors) { }
 
     public Result scan(List<Path> sources, boolean recursive, Consumer<Progress> progress,
@@ -86,8 +90,10 @@ public final class LibraryScanner {
             String title = field(tag, FieldKey.TITLE, name);
             String artist = field(tag, FieldKey.ARTIST, "Unknown artist");
             String album = field(tag, FieldKey.ALBUM, "Unknown album");
+            String genre = field(tag, FieldKey.GENRE, "Unknown genre");
             double duration = audio.getAudioHeader() == null ? 0 : audio.getAudioHeader().getPreciseTrackLength();
-            tracks.add(new Track(canonical, title, artist, album, duration, extension.toUpperCase(Locale.ROOT)));
+            tracks.add(new Track(canonical, title, artist, album, duration,
+                extension.toUpperCase(Locale.ROOT), genre));
         } catch (Exception error) {
             counts[1]++;
             rememberError(errors, file.getFileName() + ": " + error.getMessage());
