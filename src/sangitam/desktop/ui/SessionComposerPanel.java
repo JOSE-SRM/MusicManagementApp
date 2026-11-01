@@ -19,7 +19,7 @@ public final class SessionComposerPanel extends JPanel {
     private final JCheckBox familiarOnly = new JCheckBox("Prioritise familiar tracks");
     private final JLabel recipeTitle = UiFactory.label("Balanced focus", Theme.HEADING, Theme.TEXT);
     private final JLabel recipeDetail = UiFactory.label(
-        "<html>11 tracks · steady pace<br>Low distraction</html>", Theme.BODY, Theme.TEXT_MUTED);
+        "<html>Example recipe · steady pace<br>Track selection is coming next</html>", Theme.BODY, Theme.TEXT_MUTED);
     private final SoundscapeCanvas canvas = new SoundscapeCanvas();
     private final transient Consumer<String> notify;
 
@@ -89,7 +89,7 @@ public final class SessionComposerPanel extends JPanel {
         panel.add(familiarOnly);
         panel.add(Box.createVerticalStrut(17));
 
-        JButton build = UiFactory.button("Build my session", AppIcons.of(AppIcons.Kind.PLAY, 15, Theme.BLACK), true);
+        JButton build = UiFactory.button("Preview session", AppIcons.of(AppIcons.Kind.PLAY, 15, Theme.BLACK), true);
         build.setAlignmentX(Component.LEFT_ALIGNMENT);
         build.setMaximumSize(new Dimension(Integer.MAX_VALUE, 42));
         build.addActionListener(event -> buildSession());
@@ -153,9 +153,10 @@ public final class SessionComposerPanel extends JPanel {
         int tracks = Math.max(6, minutes / 4);
         String familiarity = familiarOnly.isSelected() ? "familiar-first" : "discovery-ready";
         recipeTitle.setText(intent + " · " + energyWord());
-        recipeDetail.setText("<html>" + tracks + " tracks · " + minutes + " minutes<br>" + familiarity + "</html>");
+        recipeDetail.setText("<html>About " + tracks + " tracks · " + minutes
+            + " minutes<br>" + familiarity + " · preview only</html>");
         canvas.reveal(energy.getValue());
-        notify.accept("Session built: " + intent + ", " + minutes + " minutes");
+        notify.accept("Session preview updated · track selection is coming next");
     }
 
     private String energyWord() {

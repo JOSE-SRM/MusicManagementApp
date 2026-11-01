@@ -1,24 +1,10 @@
-# Sangitam desktop UI
+# Sangitam desktop
 
-A responsive, dependency-free Java Swing prototype for managing and browsing music.
+Sangitam is a local music library and listening workspace built with Java Swing. It now imports MP3 and WAV files, keeps their metadata in a local SQLite database, searches the imported collection, and plays selected tracks. The Session Composer remains a preview for the next stage: it does not yet build a real queue.
 
-## What makes it different
+## Run
 
-Sangitam is designed as a **listening workspace**, rather than another library browser. Its Session Composer lets a listener describe the next block of time using intent, energy and duration, then creates a visual session recipe. The interaction is implemented with basic Swing models and listeners so it remains approachable for students and reviewers.
-
-Other distinctive details include a searchable `Ctrl/Cmd+K` command palette, a smoothly expanding library, resolution-independent Java2D icons, responsive panel visibility and keyboard focus feedback. See `docs/ARCHITECTURE.md` for an explanation of how each idea maps to a Swing concept.
-
-## Project structure
-
-```text
-src/
-  sangitam/desktop/app/SangitamApp.java    application entry point
-  sangitam/desktop/ui/                     modular Swing screens and components
-bin/
-  sangitam/desktop/...                     generated `.class` files
-```
-
-## Build and run
+Install **JDK 21 or newer**. The Maven wrapper downloads the build tools and dependencies on the first build; a separate Maven installation is not needed.
 
 On macOS or Linux:
 
@@ -29,8 +15,40 @@ make run
 On Windows:
 
 ```bat
-build.bat
-java -cp bin sangitam.desktop.app.SangitamApp
+run.bat
 ```
 
-The current version intentionally implements GUI interactions only. Commands provide a notification until media playback and persistence services are added.
+Use **Add music** to choose one or more MP3/WAV files or a folder. You can include subfolders. The original files stay in place. Double-click a track in the dashboard, search results or library to play it. The player bar supports play/pause, previous/next, seeking and volume. The search screen filters real titles, artists and albums. If a file is moved after import, playback reports that it is missing.
+
+Compiled classes mirror the package structure under `bin/sangitam/desktop/`. The library database is stored in the current user's application data folder, not in the Git checkout. For an isolated demo, pass `-Dsangitam.dataDir=/path/to/demo-data` to the Java/Maven process.
+
+## Build and test
+
+```sh
+make compile
+make test
+make clean
+```
+
+Windows users can compile with `build.bat`. Tests use generated silent audio and cover folder scanning, metadata, duplicate paths, persistence, search and the background import-to-Swing update path.
+
+## Structure
+
+```text
+src/sangitam/desktop/
+  app/       Swing entry point
+  ui/        all visible Swing screens and controls
+  model/     Track data
+  library/   file scanning, background import and search rules
+  storage/   SQLite persistence and application-data path
+  playback/  audio interface and JavaFX Media adapter
+bin/sangitam/desktop/   generated class files
+```
+
+JavaFX is used only to decode and control audio. Every visible screen and control remains a Swing component. See [architecture notes](docs/ARCHITECTURE.md) for the flow and threading rules.
+
+## Current limits
+
+The first stage supports MP3 and WAV. The Session Composer still shows a visual recipe without choosing tracks. Playlists, listening history, advanced metadata repair, format expansion and a packaged installer are later work. Menus for features not yet implemented still show notifications.
+
+The project uses OpenJFX Media, SQLite JDBC and Jaudiotagger. Review their licenses and package the required notices before distributing a release build.

@@ -1,32 +1,40 @@
-# Sangitam UI architecture
+# Sangitam architecture
 
-Sangitam’s product idea is simple: instead of making people choose a playlist first, ask how they want the next listening session to feel. The UI turns an intent, energy level and available time into a session recipe. Audio playback and recommendation logic can be connected later without redesigning the interface.
+Sangitam keeps a small, explainable separation between the Swing interface and the work behind it. The first working journey is **choose a file or folder → scan metadata → save a track → search or browse → play**.
 
-## How to explain the project
+## How the pieces connect
 
-1. `SangitamApp` starts Swing on the Event Dispatch Thread and opens `MainFrame`.
-2. `MainFrame` composes the navigation, current screen, library, player and notification bar.
-3. `CardLayout` switches between the dashboard and search without creating new windows.
-4. `SessionComposerPanel` reads standard Swing input models and calculates a preview.
-5. `SoundscapeCanvas` demonstrates custom painting with Java2D. A short `Timer` reveals the new wave after the user builds a session.
-6. `LibraryPanel` uses another `Timer` to animate its width safely on the Event Dispatch Thread.
-7. `CommandPaletteDialog` filters a `DefaultListModel` and runs actions supplied by `MainFrame`.
-8. `Theme`, `UiFactory` and `AppIcons` keep visual decisions out of the feature panels.
+```text
+SangitamApp
+  └─ MainFrame (navigation and shared state wiring)
+       ├─ Swing panels: Dashboard, Search, Library, Import dialog, Player bar
+       ├─ LibraryService
+       │    ├─ LibraryScanner → Track
+       │    └─ LibraryStore → local SQLite file
+       └─ PlayerService → JavaFxPlayerService → local audio file
+```
 
-## Swing concepts used with a purpose
+`MainFrame` owns one `LibraryService` and one `PlayerService`. It sends the same track list to the dashboard, search panel and library panel. These panels do not contain their own sample collections or SQL. A double-click or Enter action sends a `Track` back to `MainFrame`, which asks the player to open it. The player sends an immutable `PlaybackState` back to the Swing player bar.
 
-| Swing concept | Where it is used | Why it is used |
-|---|---|---|
-| `BorderLayout`, `BoxLayout`, `GridLayout`, `GridBagLayout` | Screens and dialogs | Responsive composition at different levels |
-| `CardLayout` | Main workspace | Fast screen navigation in one window |
-| `ButtonGroup` and `JToggleButton` | Session intent | Exactly one intent can be selected |
-| `JSlider`, `JComboBox`, `JCheckBox` | Session controls | Energy, duration and familiarity preferences |
-| `JTable`, `JList`, `JTree`, `JTabbedPane` | History, search and library | Appropriate views for different collection shapes |
-| `JFileChooser` | Media import | Accepts files, multiple files and directories |
-| `Timer` | Soundscape and library | Safe, non-blocking UI animation |
-| Custom `paintComponent` | Icons and soundscape | Sharp visuals without external assets |
-| Key bindings and `Action` | Command palette | Keyboard-first navigation that works beyond focused controls |
+`Track` is a small record containing a normalized file path, title, artist, album, duration and format. The path is the database key, so importing the same file again updates one row rather than creating a duplicate. The scanner accepts MP3 and WAV files, reads embedded metadata with Jaudiotagger, and falls back to the filename when tags are empty. It does not follow directory symlinks while walking a folder.
 
-## Separation of responsibilities
+`LibraryStore` is the only class that knows SQLite. `AppPaths` locates the database in the user's application-data area. `TrackSearch` is a pure function over the imported library, so its filtering rules can be tested separately from Swing.
 
-Feature panels own only their local controls and interaction state. `MainFrame` owns navigation between features. Reusable appearance stays in `Theme` and `UiFactory`. This keeps every file small enough to explain independently and leaves clear connection points for a real media service, metadata repository and recommendation engine.
+## Threading
+
+Swing components are created and updated on the Event Dispatch Thread. `LibraryService` uses `SwingWorker` for initial database loading, folder scanning and database writes; it publishes progress and final track snapshots back on the Event Dispatch Thread. Search filtering runs in a debounced `SwingWorker`, so typing does not perform the full scan inside a text-field listener. Library and soundscape animations use `javax.swing.Timer`.
+
+Audio decoding uses JavaFX Media on its own application thread. `JavaFxPlayerService` is the only class that imports JavaFX. It starts that thread in the background when the player service is created, turns commands into JavaFX work, and returns immutable state to Swing with `SwingUtilities.invokeLater`. The visible interface still uses only Swing components. The adapter can be replaced if another decoder proves better for later format support or packaging.
+
+## Presenting the code
+
+1. Start at `SangitamApp`: install the theme and create `MainFrame` on the Event Dispatch Thread.
+2. Show `MainFrame`: one place wires screens, the library and the player together.
+3. Import a test folder: `ImportMediaDialog` passes paths to `LibraryService`; `LibraryScanner` reads files; `LibraryStore` saves tracks.
+4. Search: `SearchPanel` asks `TrackSearch` to filter the shared track list.
+5. Play a track: a panel sends `Track` to `MainFrame`, then `PlayerService` reports a `PlaybackState` to `PlayerBar`.
+6. Show the Session Composer and soundscape as the next product stage. Today they preview an intent and duration, but they do not yet select songs.
+
+## Next boundary
+
+The next stage adds a session service that chooses and orders actual tracks using clear rules, shows reasons and duration, permits editing, and saves the resulting queue. It should use `Track` data from `LibraryService` and stay independent of Swing so its selection rules can be tested directly.

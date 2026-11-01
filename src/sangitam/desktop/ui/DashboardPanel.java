@@ -1,29 +1,48 @@
 package sangitam.desktop.ui;
 
+import sangitam.desktop.model.Track;
+
 import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
+import java.awt.event.KeyEvent;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Consumer;
 
-/**
- * Modern home dashboard built only from standard Swing components.
- * IMPORTANT: The central table uses a non-editable model because this screen is for navigation, not metadata editing.
- */
+/** Home screen: the Session Composer and a truthful preview of indexed local music. */
 public final class DashboardPanel extends JPanel {
     private static final long serialVersionUID = 1L;
+    private final DefaultTableModel model = new DefaultTableModel(
+        new String[] {"#", "Title", "Artist", "Album", "Duration"}, 0) {
+        @Override public boolean isCellEditable(int row, int column) { return false; }
+    };
+    private final List<Track> shown = new ArrayList<>();
+    private final JLabel libraryCaption = UiFactory.label("Import music to fill your library.", Theme.SMALL, Theme.TEXT_MUTED);
 
-    public DashboardPanel(Runnable importMedia, Consumer<String> notify) {
+    public DashboardPanel(Runnable importMedia, Consumer<Track> onPlay, Consumer<String> notify) {
         super(new BorderLayout(0, 22));
         setBackground(Theme.BLACK);
         setBorder(Theme.padding(28, 30, 24, 30));
         add(header(importMedia), BorderLayout.NORTH);
-        JScrollPane scroll = new JScrollPane(content(notify));
+        JScrollPane scroll = new JScrollPane(content(onPlay, notify));
         scroll.setBorder(null);
-        scroll.setBackground(Theme.BLACK);
         scroll.getViewport().setBackground(Theme.BLACK);
         scroll.getVerticalScrollBar().setUnitIncrement(16);
         scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         add(scroll, BorderLayout.CENTER);
+    }
+
+    public void setTracks(List<Track> tracks) {
+        shown.clear();
+        shown.addAll(tracks.subList(0, Math.min(8, tracks.size())));
+        model.setRowCount(0);
+        for (int i = 0; i < shown.size(); i++) {
+            Track track = shown.get(i);
+            model.addRow(new Object[] {i + 1, track.title(), track.artist(), track.album(), track.durationLabel()});
+        }
+        libraryCaption.setText(tracks.isEmpty() ? "Import music to fill your library."
+            : tracks.size() + " tracks in your library · double-click a row to play");
     }
 
     private JComponent header(Runnable importMedia) {
@@ -34,21 +53,18 @@ public final class DashboardPanel extends JPanel {
         titles.setLayout(new BoxLayout(titles, BoxLayout.Y_AXIS));
         titles.add(UiFactory.label("Music for the moment you’re in", Theme.TITLE, Theme.TEXT));
         titles.add(Box.createVerticalStrut(5));
-        titles.add(UiFactory.label("Shape a session, continue listening, or bring in something new.", Theme.BODY, Theme.TEXT_MUTED));
+        titles.add(UiFactory.label("Shape a session, browse your music, or bring in something new.", Theme.BODY, Theme.TEXT_MUTED));
         header.add(titles, BorderLayout.CENTER);
-
         JButton add = UiFactory.button("Add music", AppIcons.of(AppIcons.Kind.PLUS, 16, Theme.BLACK), true);
         add.addActionListener(event -> importMedia.run());
         header.add(add, BorderLayout.EAST);
         return header;
     }
 
-    private JComponent content(Consumer<String> notify) {
+    private JComponent content(Consumer<Track> onPlay, Consumer<String> notify) {
         JPanel content = new JPanel();
-        content.setOpaque(true);
-        content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
-
         content.setBackground(Theme.BLACK);
+        content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
         SessionComposerPanel composer = new SessionComposerPanel(notify);
         composer.setAlignmentX(Component.LEFT_ALIGNMENT);
         composer.setMaximumSize(new Dimension(Integer.MAX_VALUE, 380));
@@ -56,50 +72,50 @@ public final class DashboardPanel extends JPanel {
         content.add(composer);
         content.add(Box.createVerticalStrut(26));
 
-        JLabel recent = UiFactory.label("Continue listening", Theme.HEADING, Theme.TEXT);
-        recent.setAlignmentX(Component.LEFT_ALIGNMENT);
-        content.add(recent);
+        JLabel heading = UiFactory.label("In your library", Theme.HEADING, Theme.TEXT);
+        heading.setAlignmentX(Component.LEFT_ALIGNMENT);
+        content.add(heading);
+        content.add(Box.createVerticalStrut(6));
+        libraryCaption.setAlignmentX(Component.LEFT_ALIGNMENT);
+        content.add(libraryCaption);
         content.add(Box.createVerticalStrut(12));
 
-        String[] columns = {"#", "Title", "Artist", "Album", "Duration"};
-        Object[][] rows = {
-            {1, "Midnight Drive", "Aster Avenue", "Blue Hours", "3:42"},
-            {2, "Soft Current", "North Arcade", "Signals", "4:06"},
-            {3, "City Rain", "Mira Coast", "Afterlight", "3:18"},
-            {4, "Open Skies", "Sol Line", "Long Way Home", "4:51"},
-            {5, "Quiet Motion", "Aster Avenue", "Blue Hours", "3:35"}
-        };
-        JTable table = new JTable(new DefaultTableModel(rows, columns) {
-            @Override public boolean isCellEditable(int row, int column) { return false; }
-        });
+        JTable table = new JTable(model);
         table.setRowHeight(38);
         table.setFont(Theme.BODY);
         table.getTableHeader().setFont(Theme.BODY_BOLD);
         table.getTableHeader().setPreferredSize(new Dimension(0, 40));
         table.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS);
         table.setShowVerticalLines(false);
-        table.setShowHorizontalLines(true);
         table.setIntercellSpacing(new Dimension(0, 1));
-        table.setFillsViewportHeight(true);
         table.getTableHeader().setReorderingAllowed(false);
-        table.getSelectionModel().addListSelectionListener(event -> {
-            if (!event.getValueIsAdjusting() && table.getSelectedRow() >= 0) {
-                notify.accept("Selected “" + table.getValueAt(table.getSelectedRow(), 1) + "”");
-            }
-        });
         table.getColumnModel().getColumn(0).setPreferredWidth(42);
         table.getColumnModel().getColumn(1).setPreferredWidth(210);
         table.getColumnModel().getColumn(2).setPreferredWidth(175);
         table.getColumnModel().getColumn(3).setPreferredWidth(175);
         table.getColumnModel().getColumn(4).setPreferredWidth(82);
-        JScrollPane scroll = new JScrollPane(table);
-        scroll.setBackground(Theme.SURFACE);
-        scroll.getViewport().setBackground(Theme.SURFACE);
-        scroll.setAlignmentX(Component.LEFT_ALIGNMENT);
-        scroll.setBorder(UiFactory.roundedBorder(Theme.DIVIDER, 14));
-        scroll.setPreferredSize(new Dimension(700, 220));
-        scroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 240));
-        content.add(scroll);
+        table.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override public void mouseClicked(java.awt.event.MouseEvent event) {
+                if (event.getClickCount() == 2) playSelected(table, onPlay);
+            }
+        });
+        table.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "playSelected");
+        table.getActionMap().put("playSelected", new AbstractAction() {
+            private static final long serialVersionUID = 1L;
+            @Override public void actionPerformed(java.awt.event.ActionEvent event) { playSelected(table, onPlay); }
+        });
+        JScrollPane tableScroll = new JScrollPane(table);
+        tableScroll.getViewport().setBackground(Theme.SURFACE);
+        tableScroll.setAlignmentX(Component.LEFT_ALIGNMENT);
+        tableScroll.setBorder(UiFactory.roundedBorder(Theme.DIVIDER, 14));
+        tableScroll.setPreferredSize(new Dimension(700, 220));
+        tableScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 240));
+        content.add(tableScroll);
         return content;
+    }
+
+    private void playSelected(JTable table, Consumer<Track> onPlay) {
+        int row = table.getSelectedRow();
+        if (row >= 0 && row < shown.size()) onPlay.accept(shown.get(row));
     }
 }

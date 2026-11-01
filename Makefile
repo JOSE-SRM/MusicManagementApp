@@ -1,20 +1,18 @@
-JAVAC := javac
-JAVA := java
-SRC_DIR := src
-BIN_DIR := bin
-MAIN_CLASS := sangitam.desktop.app.SangitamApp
-SOURCES := $(shell find $(SRC_DIR) -name "*.java")
+MVN := ./mvnw
 
-.PHONY: all compile run clean
+.PHONY: all compile run test clean
 
 all: compile
 
 compile:
-	@mkdir -p $(BIN_DIR)
-	$(JAVAC) -encoding UTF-8 -d $(BIN_DIR) $(SOURCES)
+	$(MVN) -q -DskipTests compile
 
 run: compile
-	$(JAVA) -cp $(BIN_DIR) $(MAIN_CLASS)
+	$(MVN) -q exec:java
+
+test:
+	$(MVN) -q test
 
 clean:
-	rm -rf $(BIN_DIR)
+	$(MVN) -q clean
+	rm -rf bin

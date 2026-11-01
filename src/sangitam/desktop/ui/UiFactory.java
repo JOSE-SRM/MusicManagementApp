@@ -43,7 +43,7 @@ public final class UiFactory {
     public static JButton iconButton(Icon icon, String tooltip) {
         JButton button = button("", icon, false);
         button.setToolTipText(tooltip);
-        button.setBorder(Theme.padding(9, 10, 9, 10));
+        button.getAccessibleContext().setAccessibleName(tooltip);
         return button;
     }
 

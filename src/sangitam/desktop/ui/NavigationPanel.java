@@ -36,11 +36,11 @@ public final class NavigationPanel extends JPanel {
         collection.setAlignmentX(Component.LEFT_ALIGNMENT);
         add(collection);
         add(Box.createVerticalStrut(10));
-        add(navButton("Songs", AppIcons.Kind.MUSIC, () -> notify.accept("Songs selected")));
+        add(navButton("Songs", AppIcons.Kind.MUSIC, () -> navigate.accept("songs")));
         add(Box.createVerticalStrut(6));
-        add(navButton("Albums", AppIcons.Kind.MUSIC, () -> notify.accept("Albums selected")));
+        add(navButton("Albums", AppIcons.Kind.MUSIC, () -> navigate.accept("albums")));
         add(Box.createVerticalStrut(6));
-        add(navButton("Artists", AppIcons.Kind.MUSIC, () -> notify.accept("Artists selected")));
+        add(navButton("Artists", AppIcons.Kind.MUSIC, () -> navigate.accept("artists")));
 
         add(Box.createVerticalGlue());
         String shortcut = System.getProperty("os.name", "").toLowerCase().contains("mac") ? "⌘K" : "Ctrl K";

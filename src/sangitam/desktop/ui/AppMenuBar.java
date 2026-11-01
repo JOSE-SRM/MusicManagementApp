@@ -5,11 +5,13 @@ import java.awt.Toolkit;
 import java.awt.event.KeyEvent;
 import java.util.function.Consumer;
 
-/** Professional application menu bar. IMPORTANT: Commands are GUI placeholders and only publish notifications. */
+/** Application menus. Live library and playback actions coexist with clearly notified future commands. */
 public final class AppMenuBar extends JMenuBar {
     private static final long serialVersionUID = 1L;
 
-    public AppMenuBar(Runnable openMedia, Runnable quickActions, Consumer<String> notify, Runnable exit) {
+    public AppMenuBar(Runnable openMedia, Runnable quickActions, Runnable playPause,
+                      Runnable previousTrack, Runnable nextTrack, Runnable showSearch,
+                      Consumer<String> notify, Runnable exit) {
         setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, Theme.DIVIDER));
 
         JMenu file = menu("File");
@@ -29,7 +31,7 @@ public final class AppMenuBar extends JMenuBar {
         edit.add(item("Redo", AppIcons.Kind.NEXT, KeyEvent.VK_Y, () -> notify.accept("Redo selected")));
         edit.addSeparator();
         edit.add(item("Select all", AppIcons.Kind.MUSIC, KeyEvent.VK_A, () -> notify.accept("Select all selected")));
-        edit.add(item("Find…", AppIcons.Kind.SEARCH, KeyEvent.VK_F, () -> notify.accept("Find selected")));
+        edit.add(item("Find…", AppIcons.Kind.SEARCH, KeyEvent.VK_F, showSearch));
         edit.add(item("Preferences…", AppIcons.Kind.SETTINGS, 0, () -> notify.accept("Preferences selected")));
 
         JMenu view = menu("View");
@@ -49,9 +51,9 @@ public final class AppMenuBar extends JMenuBar {
         view.add(item("Full screen", AppIcons.Kind.EXPAND, KeyEvent.VK_F11, () -> notify.accept("Full screen selected")));
 
         JMenu playback = menu("Playback");
-        playback.add(item("Play / pause", AppIcons.Kind.PLAY, KeyEvent.VK_SPACE, () -> notify.accept("Play / pause pressed")));
-        playback.add(item("Previous track", AppIcons.Kind.PREVIOUS, 0, () -> notify.accept("Previous track pressed")));
-        playback.add(item("Next track", AppIcons.Kind.NEXT, 0, () -> notify.accept("Next track pressed")));
+        playback.add(item("Play / pause", AppIcons.Kind.PLAY, 0, playPause));
+        playback.add(item("Previous track", AppIcons.Kind.PREVIOUS, 0, previousTrack));
+        playback.add(item("Next track", AppIcons.Kind.NEXT, 0, nextTrack));
         playback.addSeparator();
         playback.add(checkItem("Shuffle", false, notify));
         playback.add(checkItem("Repeat", false, notify));
