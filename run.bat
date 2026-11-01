@@ -1,5 +1,6 @@
 @echo off
 setlocal
-call mvnw.cmd -q -DskipTests compile
+cd /d "%~dp0"
+call build.bat
 if errorlevel 1 exit /b 1
 call mvnw.cmd -q exec:java

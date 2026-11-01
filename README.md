@@ -32,6 +32,8 @@ make clean
 
 Windows users can compile with `build.bat`. Tests use generated silent audio and cover folder scanning, metadata, duplicate paths, persistence, search and the background import-to-Swing update path.
 
+If Windows reports that `Theme`, `AppIcons`, `NotificationCenter`, or `SoundscapeCanvas` cannot be found, the local folder is missing shared UI files from the `codex/modular-swing-ui` branch. Get the **whole branch**, not just the newest commit's changed files. In an existing Git checkout, run `git fetch origin`, switch to `codex/modular-swing-ui`, then run `git pull --ff-only` and `build.bat`. If Git reports local changes, save them before switching branches; do not discard them. The Windows build script checks these files and starts from a clean compilation.
+
 ## Structure
 
 ```text
