@@ -11,6 +11,7 @@ public final class AppMenuBar extends JMenuBar {
 
     public AppMenuBar(Runnable openMedia, Runnable quickActions, Runnable playPause,
                       Runnable previousTrack, Runnable nextTrack, Runnable showSearch,
+                      Runnable showDiscover,
                       Consumer<String> notify, Runnable exit) {
         setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, Theme.DIVIDER));
 
@@ -32,6 +33,7 @@ public final class AppMenuBar extends JMenuBar {
         edit.addSeparator();
         edit.add(item("Select all", AppIcons.Kind.MUSIC, KeyEvent.VK_A, () -> notify.accept("Select all selected")));
         edit.add(item("Find…", AppIcons.Kind.SEARCH, KeyEvent.VK_F, showSearch));
+        edit.add(item("Discover online…", AppIcons.Kind.SEARCH, 0, showDiscover));
         edit.add(item("Preferences…", AppIcons.Kind.SETTINGS, 0, () -> notify.accept("Preferences selected")));
 
         JMenu view = menu("View");

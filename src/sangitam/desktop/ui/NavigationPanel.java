@@ -27,6 +27,8 @@ public final class NavigationPanel extends JPanel {
         add(Box.createVerticalStrut(6));
         add(navButton("Search", AppIcons.Kind.SEARCH, () -> navigate.accept("search")));
         add(Box.createVerticalStrut(6));
+        add(navButton("Discover online", AppIcons.Kind.SEARCH, () -> navigate.accept("discover")));
+        add(Box.createVerticalStrut(6));
         add(navButton("Browse media", AppIcons.Kind.FOLDER, importMedia));
         add(Box.createVerticalStrut(6));
         add(navButton("Your library", AppIcons.Kind.MUSIC, toggleLibrary));

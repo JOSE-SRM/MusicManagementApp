@@ -7,7 +7,8 @@ Sangitam keeps a small, explainable separation between the Swing interface and t
 ```text
 SangitamApp
   └─ MainFrame (navigation and shared state wiring)
-       ├─ Swing panels: Dashboard, Search, Library, Import dialog, Player bar
+       ├─ Swing panels: Dashboard, Search, Discover, Library, Import dialog, Player bar
+       ├─ DiscoverPanel → MusicProvider adapters → official catalog APIs
        ├─ LibraryService
        │    ├─ LibraryScanner → Track
        │    ├─ AudioAnalyzer → TrackTags
@@ -26,9 +27,11 @@ SangitamApp
 
 `LibraryStore` is the only class that knows SQLite. `AppPaths` locates the database in the user's application-data area. `TrackSearch` is a pure function over the imported library, so its filtering rules can be tested separately from Swing.
 
+`DiscoverPanel` is a separate search path for online catalogs. Each `MusicProvider` adapter reads only catalog metadata and constructs a link on the provider's official domain. MusicBrainz works without a credential; the other adapters read environment variables at startup. A `CatalogTrack` is intentionally distinct from the local `Track`, so online results cannot accidentally enter local playback or the tag-based session queue. No provider credentials are persisted.
+
 ## Threading
 
-Swing components are created and updated on the Event Dispatch Thread. `LibraryService` uses `SwingWorker` for initial database loading, folder scanning, audio analysis and database writes; it publishes progress and final catalog snapshots back on the Event Dispatch Thread. Old libraries are analyzed after their track list is already visible. Session building and file-existence checks run in another worker. Search filtering runs in a debounced `SwingWorker`. Library and soundscape animations use `javax.swing.Timer`.
+Swing components are created and updated on the Event Dispatch Thread. `LibraryService` uses `SwingWorker` for initial database loading, folder scanning, audio analysis and database writes; it publishes progress and final catalog snapshots back on the Event Dispatch Thread. Old libraries are analyzed after their track list is already visible. Session building and file-existence checks run in another worker. Search filtering runs in a debounced `SwingWorker`. Online HTTP searches and browser launches also run in `SwingWorker`s with timeouts. Library and soundscape animations use `javax.swing.Timer`.
 
 Audio decoding uses JavaFX Media on its own application thread. `JavaFxPlayerService` is the only class that imports JavaFX. It starts that thread in the background when the player service is created, turns commands into JavaFX work, and returns immutable state to Swing with `SwingUtilities.invokeLater`. The visible interface still uses only Swing components. The adapter can be replaced if another decoder proves better for later format support or packaging.
 

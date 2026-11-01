@@ -32,6 +32,7 @@ public final class MainFrame extends JFrame {
     private final SessionPlanner planner = new SessionPlanner();
     private DashboardPanel dashboard;
     private SearchPanel search;
+    private DiscoverPanel discover;
     private LibraryPanel libraryPanel;
     private PlayerBar playerBar;
     private List<Track> tracks = List.of();
@@ -52,7 +53,8 @@ public final class MainFrame extends JFrame {
         setContentPane(buildWindow());
         setJMenuBar(new AppMenuBar(this::openImportDialog, this::openCommandPalette,
             this::togglePlayback, this::previousTrack, this::nextTrack,
-            () -> showScreen("search"), notifications::show, this::closeApp));
+            () -> showScreen("search"), () -> showScreen("discover"),
+            notifications::show, this::closeApp));
         installKeyboardShortcuts();
         addComponentListener(new ComponentAdapter() {
             @Override public void componentResized(ComponentEvent event) { updateResponsiveLayout(); }
@@ -78,8 +80,10 @@ public final class MainFrame extends JFrame {
                 @Override public void edited(List<SessionPlanner.Choice> choices) { editSession(choices); }
             });
         search = new SearchPanel(this::playTrack);
+        discover = new DiscoverPanel(notifications::show);
         screens.add(dashboard, "home");
         screens.add(search, "search");
+        screens.add(discover, "discover");
 
         JPanel workspace = new JPanel(new BorderLayout());
         workspace.setBackground(Theme.BLACK);
@@ -275,6 +279,7 @@ public final class MainFrame extends JFrame {
         boolean collectionCategory = name.equals("songs") || name.equals("albums") || name.equals("artists");
         screenLayout.show(screens, collectionCategory ? "search" : name);
         if (collectionCategory) search.selectCategory(name);
+        if (name.equals("discover")) discover.focusSearch();
         notifications.show(Character.toUpperCase(name.charAt(0)) + name.substring(1) + " opened");
     }
 
@@ -296,6 +301,7 @@ public final class MainFrame extends JFrame {
         Map<String, Runnable> commands = new LinkedHashMap<>();
         commands.put("Shape a listening session", () -> showScreen("home"));
         commands.put("Search music", () -> showScreen("search"));
+        commands.put("Discover online music", () -> showScreen("discover"));
         commands.put("Add files or a folder", this::openImportDialog);
         commands.put("Show or hide library", this::toggleLibrary);
         commands.put("Play or pause", this::togglePlayback);
