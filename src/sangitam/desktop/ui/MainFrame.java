@@ -1,6 +1,8 @@
 package sangitam.desktop.ui;
 
 import sangitam.desktop.library.LibraryService;
+import sangitam.desktop.history.HistoryService;
+import sangitam.desktop.history.QualifiedPlayTracker;
 import sangitam.desktop.model.Track;
 import sangitam.desktop.playback.JavaFxPlayerService;
 import sangitam.desktop.playback.PlaybackState;
@@ -27,12 +29,16 @@ public final class MainFrame extends JFrame {
     private final CardLayout screenLayout = new CardLayout();
     private final JPanel screens = new JPanel(screenLayout);
     private final NotificationCenter notifications = new NotificationCenter();
-    private final LibraryService library = new LibraryService(new LibraryStore(AppPaths.libraryDatabase()));
+    private final LibraryStore store = new LibraryStore(AppPaths.libraryDatabase());
+    private final LibraryService library = new LibraryService(store);
+    private final HistoryService history = new HistoryService(store);
+    private final QualifiedPlayTracker playTracker = new QualifiedPlayTracker();
     private final PlayerService player = new JavaFxPlayerService();
     private final SessionPlanner planner = new SessionPlanner();
     private DashboardPanel dashboard;
     private SearchPanel search;
     private DiscoverPanel discover;
+    private RediscoverPanel rediscover;
     private LibraryPanel libraryPanel;
     private PlayerBar playerBar;
     private List<Track> tracks = List.of();
@@ -41,7 +47,6 @@ public final class MainFrame extends JFrame {
     private int sessionIndex = -1;
     private boolean sessionActive;
     private long playGeneration;
-    private long countedGeneration = -1;
     private boolean compactLayout;
 
     public MainFrame() {
@@ -60,7 +65,7 @@ public final class MainFrame extends JFrame {
             @Override public void componentResized(ComponentEvent event) { updateResponsiveLayout(); }
         });
         addWindowListener(new WindowAdapter() {
-            @Override public void windowClosing(WindowEvent event) { player.close(); }
+            @Override public void windowClosing(WindowEvent event) { player.close(); history.close(); }
         });
         library.addCatalogListener(this::onLibraryChanged);
         player.setListener(this::onPlaybackState);
@@ -81,9 +86,11 @@ public final class MainFrame extends JFrame {
             });
         search = new SearchPanel(this::playTrack);
         discover = new DiscoverPanel(notifications::show);
+        rediscover = new RediscoverPanel(history, this::playTrack, notifications::show);
         screens.add(dashboard, "home");
         screens.add(search, "search");
         screens.add(discover, "discover");
+        screens.add(rediscover, "rediscover");
 
         JPanel workspace = new JPanel(new BorderLayout());
         workspace.setBackground(Theme.BLACK);
@@ -114,6 +121,7 @@ public final class MainFrame extends JFrame {
         dashboard.setTracks(updated);
         search.setTracks(updated, catalog.tags());
         libraryPanel.setTracks(updated, catalog.tags());
+        rediscover.setCatalog(catalog);
         if (selectedTrack != null) {
             selectedTrack = updated.stream().filter(track -> track.path().equals(selectedTrack.path()))
                 .findFirst().orElse(null);
@@ -124,12 +132,10 @@ public final class MainFrame extends JFrame {
     private void onPlaybackState(PlaybackState state) {
         playerBar.setState(state);
         if (state.status() == PlaybackState.Status.ERROR) notifications.show(state.error());
-        if (state.status() == PlaybackState.Status.PLAYING && state.track() != null
-            && selectedTrack != null && state.track().path().equals(selectedTrack.path())
-            && countedGeneration != playGeneration) {
-            countedGeneration = playGeneration;
+        if (state.track() != null && selectedTrack != null
+            && state.track().path().equals(selectedTrack.path())
+            && playTracker.observe(state, playGeneration))
             library.recordPlay(state.track().path(), notifications::show);
-        }
         if (state.status() == PlaybackState.Status.ERROR && sessionActive
             && state.track() != null && selectedTrack != null
             && state.track().path().equals(selectedTrack.path())) {
@@ -243,6 +249,7 @@ public final class MainFrame extends JFrame {
         } else if (state.track() != null && selectedTrack != null
             && state.track().path().equals(selectedTrack.path())
             && (state.status() == PlaybackState.Status.PAUSED || state.status() == PlaybackState.Status.ENDED)) {
+            if (state.status() == PlaybackState.Status.ENDED) playGeneration++;
             player.resume();
         } else if (selectedTrack != null) {
             playTrack(selectedTrack);
@@ -302,6 +309,7 @@ public final class MainFrame extends JFrame {
         commands.put("Shape a listening session", () -> showScreen("home"));
         commands.put("Search music", () -> showScreen("search"));
         commands.put("Discover online music", () -> showScreen("discover"));
+        commands.put("Rediscover most played songs", () -> showScreen("rediscover"));
         commands.put("Add files or a folder", this::openImportDialog);
         commands.put("Show or hide library", this::toggleLibrary);
         commands.put("Play or pause", this::togglePlayback);
@@ -327,6 +335,7 @@ public final class MainFrame extends JFrame {
 
     private void closeApp() {
         player.close();
+        history.close();
         dispose();
     }
 }

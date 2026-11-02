@@ -2,6 +2,14 @@
 
 Sangitam is a local music library and listening workspace built with Java Swing. It imports MP3 and WAV files, saves their metadata and measured audio tags in SQLite, searches the collection, and plays selected tracks. The Session Composer builds an editable, playable queue from those tags. A separate Discover screen searches online catalogs and opens results with their providers.
 
+## Rediscover favorites
+
+Open **Rediscover** in the left navigation to see **Most played** and **Forgotten favorites**. Sangitam records a local play after you actually listen to half the track or four minutes, whichever is shorter. The in-app collection groups songs by normalized title and artist, merges reports of the same play from different sources when their timestamps are within two minutes, and keeps separate repeats from the same source. A forgotten favorite has at least three known plays and no observed play in the last 30 days. Old local play counts from earlier releases are preserved, but their last-played date is unknown, so they do not enter the forgotten list until a dated play is observed.
+
+**Save & sync** connects optional histories. Enter your public ListenBrainz or Last.fm username on the Rediscover screen; usernames are remembered on this computer. Spotify uses `SANGITAM_SPOTIFY_ACCESS_TOKEN` with the additional `user-read-recently-played` OAuth scope. Last.fm also needs `SANGITAM_LASTFM_API_KEY`. Restart after setting an environment variable. Each source is optional and syncs separately; an expired token does not discard other sources' results. Syncs run in the background and repeat syncs do not add the same provider event twice. The screen offers **Play local file** when a matching imported song exists and **Open source** for a provider link. **Export collection** writes a new UTF-8 CSV into a folder you choose, without copying or downloading music.
+
+These are **known plays**, not guaranteed lifetime totals. Spotify returns at most 50 recent plays per request; this version requests that window. ListenBrainz and Last.fm fetch bounded recent scrobbles (500 and 200 respectively). If you already scrobble from another player to either service, those reported plays can be included. Apple Music's recent-track API does not give this feature a reliable timestamped play count, and YouTube's Data API does not expose watch history, so neither is counted here. The existing Apple Music and YouTube catalog search still works separately. Sangitam stores track metadata, source, links, and timestamps locally in SQLite; it never stores provider tokens in the database. See [Spotify recently played](https://developer.spotify.com/documentation/web-api/reference/get-recently-played), [ListenBrainz listens](https://listenbrainz.readthedocs.io/en/latest/users/api/core.html), [Last.fm recent tracks](https://www.last.fm/api/show/user.getRecentTracks), and [YouTube watch-history API limitation](https://developers.google.com/youtube/data/reference/rest/v3/playlistItems/list).
+
 ## Run
 
 Install **JDK 21 or newer**. The Maven wrapper downloads the build tools and dependencies on the first build; a separate Maven installation is not needed.
@@ -63,6 +71,7 @@ src/sangitam/desktop/
   storage/   SQLite persistence and application-data path
   playback/  audio interface and JavaFX Media adapter
   discovery/ online catalog adapters and bounded HTTP requests
+  history/   qualified plays, account history adapters and favorite grouping
 bin/sangitam/desktop/   generated class files
 ```
 
@@ -70,6 +79,6 @@ JavaFX is used only to decode and control audio. Every visible screen and contro
 
 ## Current limits
 
-The app currently supports MP3 and WAV. The audio tags are lightweight estimates from a short sample; a quiet introduction or a long track can make them less representative. Session queues are editable during the current run but are not yet saved as named playlists. Advanced metadata repair, format expansion and a packaged installer are later work. Online provider sign-in, in-app remote playback, and remote results in sessions are not implemented; provider APIs here are for search and official-page handoff only. Menus for features not yet implemented still show notifications.
+The app currently supports MP3 and WAV. The audio tags are lightweight estimates from a short sample; a quiet introduction or a long track can make them less representative. Session queues are editable during the current run but are not yet saved as named playlists. Advanced metadata repair, format expansion and a packaged installer are later work. In-app OAuth sign-in, in-app remote playback, and remote results in sessions are not implemented; provider audio still opens in its own service. Rediscover account sync reads only bounded recent history with externally supplied credentials or public usernames. Menus for features not yet implemented still show notifications.
 
 The project uses OpenJFX Media, SQLite JDBC, Jaudiotagger, MP3SPI (including its decoder dependencies), and Gson for provider JSON. Review their licenses and package the required notices before distributing a release build.

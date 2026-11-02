@@ -4,8 +4,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import sangitam.desktop.model.Track;
 import sangitam.desktop.model.TrackTags;
+import sangitam.desktop.history.ListenEvent;
 
 import java.nio.file.Path;
+import java.net.URI;
 import java.sql.DriverManager;
 import java.util.List;
 
@@ -49,5 +51,17 @@ class LibraryStoreTest {
         LibraryStore.CatalogEntry entry = store.loadCatalog().get(0);
         assertEquals(27, entry.tags().energy());
         assertEquals(1, entry.playCount());
+        assertEquals(1, store.loadListens().size());
+        assertEquals("Sangitam", store.loadListens().get(0).source());
+    }
+
+    @Test void repeatedProviderSyncDoesNotDuplicateSavedPlays() throws Exception {
+        LibraryStore store = new LibraryStore(folder.resolve("history.db"));
+        store.initialize();
+        ListenEvent listen = new ListenEvent("Spotify", "track:time", "Song", "Artist", "Album",
+            1_700_000_000_000L, URI.create("https://open.spotify.com/track/test"), null);
+        assertEquals(1, store.saveListens(List.of(listen)));
+        assertEquals(0, store.saveListens(List.of(listen)));
+        assertEquals(List.of(listen), store.loadListens());
     }
 }

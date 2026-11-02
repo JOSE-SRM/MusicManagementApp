@@ -2,7 +2,9 @@ package sangitam.desktop.storage;
 
 import sangitam.desktop.model.Track;
 import sangitam.desktop.model.TrackTags;
+import sangitam.desktop.history.ListenEvent;
 
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -15,6 +17,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
 /** Small SQLite boundary: UI panels never know SQL or the database location. */
 public final class LibraryStore {
@@ -55,6 +58,20 @@ public final class LibraryStore {
             addColumn(statement, columns, "file_size", "INTEGER NOT NULL DEFAULT -1");
             addColumn(statement, columns, "file_modified", "INTEGER NOT NULL DEFAULT -1");
             addColumn(statement, columns, "play_count", "INTEGER NOT NULL DEFAULT 0");
+            statement.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS listens (
+                    source TEXT NOT NULL,
+                    source_key TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    artist TEXT NOT NULL,
+                    album TEXT NOT NULL,
+                    played_at_ms INTEGER NOT NULL,
+                    link TEXT,
+                    local_path TEXT,
+                    PRIMARY KEY (source, source_key)
+                )
+                """);
+            statement.executeUpdate("CREATE INDEX IF NOT EXISTS listens_time ON listens(played_at_ms)");
         }
     }
 
@@ -131,14 +148,91 @@ public final class LibraryStore {
     }
 
     public void recordPlay(Path path) throws SQLException {
-        try (Connection connection = connect(); PreparedStatement update = connection.prepareStatement(
-            "UPDATE tracks SET play_count=play_count+1 WHERE path=?")) {
-            update.setString(1, path.toString());
-            update.executeUpdate();
+        try (Connection connection = connect()) {
+            connection.setAutoCommit(false);
+            try (PreparedStatement lookup = connection.prepareStatement(
+                    "SELECT title, artist, album FROM tracks WHERE path=?");
+                 PreparedStatement update = connection.prepareStatement(
+                    "UPDATE tracks SET play_count=play_count+1 WHERE path=?");
+                 PreparedStatement insert = connection.prepareStatement("""
+                    INSERT INTO listens(source, source_key, title, artist, album, played_at_ms, link, local_path)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """)) {
+                lookup.setString(1, path.toString());
+                try (ResultSet row = lookup.executeQuery()) {
+                    if (!row.next()) { connection.rollback(); return; }
+                    insert.setString(1, "Sangitam");
+                    insert.setString(2, UUID.randomUUID().toString());
+                    insert.setString(3, row.getString(1));
+                    insert.setString(4, row.getString(2));
+                    insert.setString(5, row.getString(3));
+                }
+                update.setString(1, path.toString());
+                update.executeUpdate();
+                insert.setLong(6, System.currentTimeMillis());
+                insert.setString(7, null);
+                insert.setString(8, path.toString());
+                insert.executeUpdate();
+                connection.commit();
+            } catch (SQLException error) {
+                connection.rollback();
+                throw error;
+            }
         }
     }
 
+    /** Provider syncs can safely overlap: repeated source keys are ignored. */
+    public int saveListens(List<ListenEvent> listens) throws SQLException {
+        try (Connection connection = connect()) {
+            connection.setAutoCommit(false);
+            try (PreparedStatement insert = connection.prepareStatement("""
+                INSERT OR IGNORE INTO listens(source, source_key, title, artist, album, played_at_ms, link, local_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """)) {
+                for (ListenEvent listen : listens) {
+                    insert.setString(1, listen.source());
+                    insert.setString(2, listen.sourceKey());
+                    insert.setString(3, listen.title());
+                    insert.setString(4, listen.artist());
+                    insert.setString(5, listen.album());
+                    insert.setLong(6, listen.playedAtMillis());
+                    insert.setString(7, listen.link() == null ? null : listen.link().toString());
+                    insert.setString(8, listen.localPath() == null ? null : listen.localPath().toString());
+                    insert.addBatch();
+                }
+                int saved = 0;
+                for (int result : insert.executeBatch()) if (result > 0) saved += result;
+                connection.commit();
+                return saved;
+            } catch (SQLException error) {
+                connection.rollback();
+                throw error;
+            }
+        }
+    }
+
+    public List<ListenEvent> loadListens() throws SQLException {
+        List<ListenEvent> listens = new ArrayList<>();
+        try (Connection connection = connect(); PreparedStatement query = connection.prepareStatement(
+                 "SELECT source, source_key, title, artist, album, played_at_ms, link, local_path " +
+                 "FROM listens ORDER BY played_at_ms DESC");
+             ResultSet rows = query.executeQuery()) {
+            while (rows.next()) {
+                String link = rows.getString(7);
+                String local = rows.getString(8);
+                listens.add(new ListenEvent(rows.getString(1), rows.getString(2), rows.getString(3),
+                    rows.getString(4), rows.getString(5), rows.getLong(6),
+                    link == null ? null : URI.create(link), local == null ? null : Path.of(local)));
+            }
+        }
+        return listens;
+    }
+
     private Connection connect() throws SQLException {
-        return DriverManager.getConnection("jdbc:sqlite:" + database);
+        Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database);
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA busy_timeout=5000");
+        }
+        return connection;
     }
 }
