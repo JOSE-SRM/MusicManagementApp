@@ -5,6 +5,9 @@ import sangitam.desktop.playback.PlaybackState;
 
 import javax.swing.*;
 import java.awt.*;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import javax.swing.plaf.basic.BasicSliderUI;
 
 /** Swing transport view. It renders audio state but delegates every control to MainFrame. */
 public final class PlayerBar extends JPanel {
@@ -64,6 +67,19 @@ public final class PlayerBar extends JPanel {
                 actions.seek(progress.getValue() / 1000.0);
             }
         });
+        progress.addMouseListener(new MouseAdapter() {
+            @Override public void mousePressed(MouseEvent event) {
+                if (!progress.isEnabled() || !SwingUtilities.isLeftMouseButton(event)) return;
+                int value = progress.getUI() instanceof BasicSliderUI ui
+                    ? ui.valueForXPosition(event.getX())
+                    : (int) Math.round(1000.0 * event.getX() / Math.max(1, progress.getWidth()));
+                value = Math.max(0, Math.min(1000, value));
+                updatingProgress = true;
+                progress.setValue(value);
+                updatingProgress = false;
+                actions.seek(value / 1000.0);
+            }
+        });
         center.add(progress, BorderLayout.CENTER);
         add(center, BorderLayout.CENTER);
 
@@ -99,6 +115,12 @@ public final class PlayerBar extends JPanel {
             updatingProgress = false;
         }
         time.setText(clock(state.positionSeconds()) + " / " + clock(state.durationSeconds()));
+    }
+
+    /** Shows a remembered track before its decoder is created. */
+    public void showRemembered(Track track, double positionSeconds) {
+        setState(new PlaybackState(track, PlaybackState.Status.PAUSED, positionSeconds,
+            track.durationSeconds(), null));
     }
 
     private String clock(double seconds) {

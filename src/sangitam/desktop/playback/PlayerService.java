@@ -8,7 +8,8 @@ import java.util.function.Consumer;
 public interface PlayerService extends AutoCloseable {
     void setListener(Consumer<PlaybackState> listener);
     PlaybackState state();
-    void play(Track track);
+    default void play(Track track) { play(track, 0); }
+    void play(Track track, double startSeconds);
     void pause();
     void resume();
     void seek(double fraction);

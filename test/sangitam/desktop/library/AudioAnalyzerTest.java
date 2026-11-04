@@ -41,7 +41,28 @@ class AudioAnalyzerTest {
         Path steady = writeWav("steady.wav", 18_000);
         Path pulsed = writePulseWav();
         AudioAnalyzer analyzer = new AudioAnalyzer();
-        assertTrue(analyzer.analyze(pulsed).activity() > analyzer.analyze(steady).activity());
+        TrackTags rhythmic = analyzer.analyze(pulsed);
+        assertTrue(rhythmic.activity() > analyzer.analyze(steady).activity());
+        assertEquals("Charged", rhythmic.energyLabel());
+        assertEquals("Busy movement", rhythmic.activityLabel());
+    }
+
+    @Test void laterRhythmicPassageIsNotHiddenByQuietIntro() throws Exception {
+        AudioFormat format = new AudioFormat(8_000, 16, 1, true, false);
+        byte[] bytes = new byte[36 * 8_000 * 2];
+        for (int sample = 20 * 8_000; sample < 36 * 8_000; sample++) {
+            boolean audible = (sample / 1_600) % 2 == 0;
+            short value = audible ? (short) (20_000 * Math.sin(sample * 2 * Math.PI * 440 / 8_000)) : 0;
+            bytes[sample * 2] = (byte) value;
+            bytes[sample * 2 + 1] = (byte) (value >>> 8);
+        }
+        Path song = folder.resolve("long-intro.wav");
+        try (AudioInputStream audio = new AudioInputStream(new ByteArrayInputStream(bytes),
+            format, bytes.length / format.getFrameSize())) {
+            AudioSystem.write(audio, AudioFileFormat.Type.WAVE, song.toFile());
+        }
+        TrackTags tags = new AudioAnalyzer().analyze(song, 60);
+        assertTrue(tags.activity() >= 40, "later repeated beats should have visible movement");
     }
 
     private Path writePulseWav() throws Exception {

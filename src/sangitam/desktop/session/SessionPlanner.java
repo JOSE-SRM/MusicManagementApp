@@ -45,7 +45,19 @@ public final class SessionPlanner {
                     playCounts.getOrDefault(track.path(), 0), artists, genres))
                     .thenComparing(track -> track.title().toLowerCase(Locale.ROOT), Comparator.reverseOrder()))
                 .orElse(null);
-            if (best == null) break;
+            if (best == null) {
+                // A long file is still usable when it is the only option.
+                if (chosen.isEmpty()) {
+                    Track shortest = tracks.stream().min(Comparator.comparingInt(this::duration)).orElse(null);
+                    if (shortest != null) {
+                        TrackTags profile = tags.getOrDefault(shortest.path(), TrackTags.pending());
+                        chosen.add(new Choice(shortest, explain(request, shortest, profile,
+                            playCounts.getOrDefault(shortest.path(), 0)) + " · longer than requested time"));
+                        total += duration(shortest);
+                    }
+                }
+                break;
+            }
             TrackTags profile = tags.getOrDefault(best.path(), TrackTags.pending());
             chosen.add(new Choice(best, explain(request, best, profile,
                 playCounts.getOrDefault(best.path(), 0))));

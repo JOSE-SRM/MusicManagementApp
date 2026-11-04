@@ -44,6 +44,14 @@ class SessionPlannerTest {
         assertEquals(2, discovery.choices().stream().map(choice -> choice.track().path()).distinct().count());
     }
 
+    @Test void oneLongSongStillProducesAnEditableSession() {
+        Track longSong = new Track(folder.resolve("long.mp3"), "Long song", "Artist", "Album", 2400, "MP3");
+        SessionPlanner.Plan plan = planner.build(new SessionPlanner.Request(
+            SessionPlanner.Intent.FOCUS, 40, 25, false), List.of(longSong), Map.of(), Map.of());
+        assertEquals(1, plan.choices().size());
+        assertTrue(plan.choices().get(0).reason().contains("longer than requested time"));
+    }
+
     private Track track(String file, String title, String artist, String genre) {
         return new Track(folder.resolve(file), title, artist, "Album", 180, "MP3", genre);
     }

@@ -11,6 +11,7 @@ import java.awt.event.KeyEvent;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Consumer;
 
@@ -19,6 +20,7 @@ public final class LibraryPanel extends JPanel {
     private static final long serialVersionUID = 1L;
     private static final int COMPACT_WIDTH = 300;
     private final DefaultListModel<Track> songModel = new DefaultListModel<>();
+    private final JList<Track> songs = new JList<>(songModel);
     private final DefaultMutableTreeNode treeRoot = new DefaultMutableTreeNode("Imported folders");
     private final DefaultTreeModel treeModel = new DefaultTreeModel(treeRoot);
     private final JLabel count = UiFactory.label("0 tracks in library", Theme.SMALL, Theme.TEXT_MUTED);
@@ -27,7 +29,7 @@ public final class LibraryPanel extends JPanel {
     private boolean expanded;
     private Timer animation;
 
-    public LibraryPanel(Runnable importMedia, Consumer<Track> onPlay) {
+    public LibraryPanel(Runnable importMedia, Consumer<Track> onPlay, Consumer<Track> onEdit) {
         super(new BorderLayout(0, 14));
         setBackground(Theme.SURFACE);
         setPreferredSize(new Dimension(COMPACT_WIDTH, 0));
@@ -42,7 +44,6 @@ public final class LibraryPanel extends JPanel {
         header.add(expandButton, BorderLayout.EAST);
         add(header, BorderLayout.NORTH);
 
-        JList<Track> songs = new JList<>(songModel);
         songs.setFixedCellHeight(56);
         songs.setCellRenderer(songRenderer);
         songs.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
@@ -78,6 +79,16 @@ public final class LibraryPanel extends JPanel {
         count.setAlignmentX(Component.LEFT_ALIGNMENT);
         footer.add(count);
         footer.add(Box.createVerticalStrut(12));
+        JButton editTags = UiFactory.button("Edit selected tags…", null, false);
+        editTags.setAlignmentX(Component.LEFT_ALIGNMENT);
+        editTags.setMaximumSize(new Dimension(Integer.MAX_VALUE, 40));
+        editTags.setEnabled(false);
+        songs.addListSelectionListener(event -> editTags.setEnabled(songs.getSelectedValue() != null));
+        editTags.addActionListener(event -> {
+            if (songs.getSelectedValue() != null) onEdit.accept(songs.getSelectedValue());
+        });
+        footer.add(editTags);
+        footer.add(Box.createVerticalStrut(8));
         JButton add = UiFactory.button("Add to library", AppIcons.of(AppIcons.Kind.PLUS, 15, Theme.BLACK), true);
         add.setAlignmentX(Component.LEFT_ALIGNMENT);
         add.setMaximumSize(new Dimension(Integer.MAX_VALUE, 40));
@@ -86,8 +97,9 @@ public final class LibraryPanel extends JPanel {
         add(footer, BorderLayout.SOUTH);
     }
 
-    public void setTracks(List<Track> tracks, Map<Path, TrackTags> tags) {
+    public void setTracks(List<Track> tracks, Map<Path, TrackTags> tags, Set<Path> manualTags) {
         songRenderer.setTags(tags);
+        songRenderer.setManuallyEdited(manualTags);
         songModel.clear();
         songModel.addAll(tracks);
         count.setText(tracks.size() + (tracks.size() == 1 ? " track in library" : " tracks in library"));

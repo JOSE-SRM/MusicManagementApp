@@ -1,6 +1,6 @@
 # Sangitam desktop
 
-Sangitam is a local music library and listening workspace built with Java Swing. It imports MP3 and WAV files, saves their metadata and measured audio tags in SQLite, searches the collection, and plays selected tracks. The Session Composer builds an editable, playable queue from those tags. A separate Discover screen searches online catalogs and opens results with their providers.
+Sangitam is a local music library and listening workspace built with Java Swing. It imports MP3 and WAV files, saves their metadata and measured audio tags in SQLite, searches the collection, and plays selected tracks. The Session Composer builds an editable, playable queue that can be saved as a named playlist. A separate Discover screen searches online catalogs and opens results with their providers.
 
 ## Rediscover favorites
 
@@ -26,11 +26,11 @@ On Windows:
 run.bat
 ```
 
-Use **Add music** to choose one or more MP3/WAV files or a folder. You can include subfolders. The original files stay in place. Double-click a track in the dashboard, search results or library to play it. The player bar supports play/pause, previous/next, seeking and volume. The search screen filters real titles, artists, albums and genre tags. If a file is moved after import, playback reports that it is missing.
+Use **Add music** to choose one or more MP3/WAV files or a folder. You can include subfolders. The original files stay in place. Double-click a track in the dashboard, search results or library to play it. The player bar appears before the library finishes loading, and the audio decoder starts only when needed. It supports play/pause, previous/next, volume, dragging the playhead, and clicking anywhere on the seek track to jump there. On the next launch, Sangitam shows the last selected song at its saved position, paused; press Play to resume it. The search screen filters titles, artists, albums and genre tags. If a file is moved after import, playback reports that it is missing.
 
-During import, Sangitam samples up to 24 seconds of each track to estimate **energy** and **rhythmic activity**. It also reads a genre tag if the file has one. The library shows these tags beside the tracks. Existing libraries are analyzed in the background after launch; unchanged files keep their saved analysis. Tracks whose audio cannot be decoded remain in the library with an honest **Not analyzed** label. Analysis is local and does not upload audio.
+During import, Sangitam estimates **energy** from loudness and movement, and **movement** from short changes in volume and sound texture. For longer songs it samples the opening and a later passage, so a quiet intro is less likely to classify the whole track. Existing libraries get the revised analysis in the background on the next launch. Genre comes from embedded file metadata; when absent, an explicitly named genre folder such as `Rock` or `Jazz` provides a hint. Other tracks remain **Genre untagged**. Select a song in **Your library** and choose **Edit selected tags…** to set its genre, energy and movement. These corrections are saved in Sangitam and survive rescans; the original audio file is not changed. Audio that cannot be decoded remains **Not analyzed**. Analysis is local and does not upload audio.
 
-On the dashboard, choose Focus, Explore, or Unwind, set energy and available time, then select **Build my session**. The queue shows why each track was selected. Reorder, remove, or manually add tracks, then press **Play session**. The player bar follows the queue. **Prioritise familiar tracks** uses the local play count. Energy and activity are simple measurements, not a claim to identify a song's emotion, genre, vocals, or exact BPM.
+On the dashboard, choose Focus, Explore, or Unwind, set energy and available time, then select **Build my session**. The queue shows why each track was selected. Reorder, remove, or manually add tracks, then press **Play session**. Choose **Save playlist** to store the current queue by name. The **Playlists** item in the left navigation opens the saved playlist selector, where you can load or delete a playlist after a restart. **File → Export → Export current playlist…** writes an M3U8 file with local file paths for other players. **Prioritise familiar tracks** uses the local play count. Energy and movement are simple measurements, not a claim to identify a song's emotion, genre, vocals, or exact BPM.
 
 ## Discover online
 
@@ -79,6 +79,6 @@ JavaFX is used only to decode and control audio. Every visible screen and contro
 
 ## Current limits
 
-The app currently supports MP3 and WAV. The audio tags are lightweight estimates from a short sample; a quiet introduction or a long track can make them less representative. Session queues are editable during the current run but are not yet saved as named playlists. Advanced metadata repair, format expansion and a packaged installer are later work. In-app OAuth sign-in, in-app remote playback, and remote results in sessions are not implemented; provider audio still opens in its own service. Rediscover account sync reads only bounded recent history with externally supplied credentials or public usernames. Menus for features not yet implemented still show notifications.
+The app currently supports MP3 and WAV. The audio traits are estimates from short passages, so complex songs can still need manual correction. Genre is not inferred from audio. Playlists contain local files; moving those files can make playlist entries unavailable. Advanced metadata repair, format expansion and a packaged installer are later work. In-app OAuth sign-in, in-app remote playback, and remote results in sessions are not implemented; provider audio still opens in its own service. Rediscover account sync reads only bounded recent history with externally supplied credentials or public usernames. Menus for features not yet implemented still show notifications.
 
 The project uses OpenJFX Media, SQLite JDBC, Jaudiotagger, MP3SPI (including its decoder dependencies), and Gson for provider JSON. Review their licenses and package the required notices before distributing a release build.

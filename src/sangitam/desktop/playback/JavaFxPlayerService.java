@@ -44,12 +44,12 @@ public final class JavaFxPlayerService implements PlayerService {
 
     @Override public PlaybackState state() { return state; }
 
-    @Override public void play(Track track) {
+    @Override public void play(Track track, double startSeconds) {
         publish(new PlaybackState(track, PlaybackState.Status.LOADING, 0, track.durationSeconds(), null));
-        onAudioThread(() -> open(track));
+        onAudioThread(() -> open(track, startSeconds));
     }
 
-    private void open(Track track) {
+    private void open(Track track, double startSeconds) {
         if (player != null) player.dispose();
         player = null;
         if (!Files.isRegularFile(track.path())) {
@@ -70,8 +70,10 @@ public final class JavaFxPlayerService implements PlayerService {
             next.setOnReady(() -> {
                 if (next != player) return;
                 double duration = next.getTotalDuration().toSeconds();
-                publish(new PlaybackState(track, PlaybackState.Status.PAUSED, 0,
-                    Double.isFinite(duration) ? duration : track.durationSeconds(), null));
+                double length = Double.isFinite(duration) ? duration : track.durationSeconds();
+                double start = Math.max(0, Math.min(startSeconds, Math.max(0, length - 1)));
+                publish(new PlaybackState(track, PlaybackState.Status.PAUSED, start, length, null));
+                if (start > 0) next.seek(Duration.seconds(start));
                 next.play();
             });
             next.setOnPlaying(() -> updateStatus(next, PlaybackState.Status.PLAYING));

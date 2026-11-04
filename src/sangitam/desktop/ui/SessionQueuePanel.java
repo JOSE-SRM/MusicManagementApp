@@ -1,6 +1,7 @@
 package sangitam.desktop.ui;
 
 import sangitam.desktop.model.Track;
+import sangitam.desktop.model.Playlist;
 import sangitam.desktop.session.SessionPlanner;
 
 import javax.swing.*;
@@ -16,12 +17,16 @@ public final class SessionQueuePanel extends JPanel {
         void start(List<SessionPlanner.Choice> choices);
         void play(SessionPlanner.Choice choice, List<SessionPlanner.Choice> choices);
         void edited(List<SessionPlanner.Choice> choices);
+        void save(String name, List<SessionPlanner.Choice> choices);
+        void load(Playlist playlist);
+        void delete(Playlist playlist);
     }
 
     private final Actions actions;
     private final DefaultListModel<SessionPlanner.Choice> model = new DefaultListModel<>();
     private final JList<SessionPlanner.Choice> list = new JList<>(model);
     private final JComboBox<Track> addTrack = new JComboBox<>();
+    private final JComboBox<Playlist> savedPlaylists = new JComboBox<>();
     private final JLabel summary = UiFactory.label("Build a session to see its queue.", Theme.SMALL, Theme.TEXT_MUTED);
 
     public SessionQueuePanel(Actions actions) {
@@ -88,10 +93,33 @@ public final class SessionQueuePanel extends JPanel {
             }
         });
         addRow.add(add, BorderLayout.EAST);
+        JPanel playlists = new JPanel(new BorderLayout(8, 0));
+        playlists.setOpaque(false);
+        savedPlaylists.setToolTipText("Saved playlists");
+        savedPlaylists.getAccessibleContext().setAccessibleName("Saved playlists");
+        playlists.add(savedPlaylists, BorderLayout.CENTER);
+        JPanel playlistActions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        playlistActions.setOpaque(false);
+        button(playlistActions, "Save playlist", this::savePlaylist);
+        button(playlistActions, "Load", () -> {
+            Playlist selected = (Playlist) savedPlaylists.getSelectedItem();
+            if (selected != null) actions.load(selected);
+        });
+        button(playlistActions, "Delete", () -> {
+            Playlist selected = (Playlist) savedPlaylists.getSelectedItem();
+            if (selected != null && JOptionPane.showConfirmDialog(this,
+                "Delete playlist ‘" + selected.name() + "’?", "Delete playlist",
+                JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION) actions.delete(selected);
+        });
+        playlists.add(playlistActions, BorderLayout.EAST);
         JPanel bottom = new JPanel(new BorderLayout(0, 8));
         bottom.setOpaque(false);
         bottom.add(footer, BorderLayout.NORTH);
-        bottom.add(addRow, BorderLayout.SOUTH);
+        JPanel lower = new JPanel(new BorderLayout(0, 8));
+        lower.setOpaque(false);
+        lower.add(addRow, BorderLayout.NORTH);
+        lower.add(playlists, BorderLayout.SOUTH);
+        bottom.add(lower, BorderLayout.SOUTH);
         add(bottom, BorderLayout.SOUTH);
     }
 
@@ -109,6 +137,41 @@ public final class SessionQueuePanel extends JPanel {
         model.clear();
         plan.choices().forEach(model::addElement);
         updateSummary();
+    }
+
+    public void setPlaylists(List<Playlist> playlists) {
+        Playlist selected = (Playlist) savedPlaylists.getSelectedItem();
+        savedPlaylists.removeAllItems();
+        playlists.forEach(savedPlaylists::addItem);
+        if (selected != null) playlists.stream().filter(item -> item.id() == selected.id())
+            .findFirst().ifPresent(savedPlaylists::setSelectedItem);
+    }
+
+    public void selectPlaylist(String name) {
+        for (int i = 0; i < savedPlaylists.getItemCount(); i++) {
+            if (savedPlaylists.getItemAt(i).name().equalsIgnoreCase(name)) {
+                savedPlaylists.setSelectedIndex(i);
+                return;
+            }
+        }
+    }
+
+    public List<SessionPlanner.Choice> currentChoices() { return choices(); }
+    public void focusSavedPlaylists() { savedPlaylists.requestFocusInWindow(); }
+
+    private void savePlaylist() {
+        if (model.isEmpty()) return;
+        String name = JOptionPane.showInputDialog(this, "Playlist name", "Save playlist",
+            JOptionPane.PLAIN_MESSAGE);
+        if (name == null) return;
+        name = name.strip();
+        if (name.isEmpty()) return;
+        for (int i = 0; i < savedPlaylists.getItemCount(); i++) {
+            if (savedPlaylists.getItemAt(i).name().equalsIgnoreCase(name)
+                && JOptionPane.showConfirmDialog(this, "Replace the existing playlist?",
+                    "Save playlist", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
+        }
+        actions.save(name, choices());
     }
 
     private void button(JPanel row, String label, Runnable action) {

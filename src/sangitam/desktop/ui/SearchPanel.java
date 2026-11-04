@@ -80,9 +80,10 @@ public final class SearchPanel extends JPanel {
         });
     }
 
-    public void setTracks(List<Track> tracks, Map<Path, TrackTags> tags) {
+    public void setTracks(List<Track> tracks, Map<Path, TrackTags> tags, java.util.Set<Path> manualTags) {
         library = List.copyOf(tracks);
         songRenderer.setTags(tags);
+        songRenderer.setManuallyEdited(manualTags);
         debounce.stop();
         runSearch();
     }

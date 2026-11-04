@@ -90,7 +90,7 @@ public final class LibraryScanner {
             String title = field(tag, FieldKey.TITLE, name);
             String artist = field(tag, FieldKey.ARTIST, "Unknown artist");
             String album = field(tag, FieldKey.ALBUM, "Unknown album");
-            String genre = field(tag, FieldKey.GENRE, "Unknown genre");
+            String genre = field(tag, FieldKey.GENRE, GenreHints.fromFolder(canonical));
             double duration = audio.getAudioHeader() == null ? 0 : audio.getAudioHeader().getPreciseTrackLength();
             tracks.add(new Track(canonical, title, artist, album, duration,
                 extension.toUpperCase(Locale.ROOT), genre));

@@ -1,6 +1,7 @@
 package sangitam.desktop.ui;
 
 import sangitam.desktop.model.Track;
+import sangitam.desktop.model.Playlist;
 import sangitam.desktop.session.SessionPlanner;
 
 import javax.swing.*;
@@ -34,6 +35,14 @@ public final class DashboardPanel extends JPanel {
         scroll.getViewport().setBackground(Theme.BLACK);
         scroll.getVerticalScrollBar().setUnitIncrement(16);
         scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        scroll.addComponentListener(new java.awt.event.ComponentAdapter() {
+            @Override public void componentResized(java.awt.event.ComponentEvent event) {
+                boolean compact = scroll.getViewport().getWidth() < 700;
+                composer.setCompact(compact);
+                composer.setPreferredSize(new Dimension(0, compact ? 620 : 350));
+                composer.setMaximumSize(new Dimension(Integer.MAX_VALUE, compact ? 640 : 380));
+            }
+        });
         add(scroll, BorderLayout.CENTER);
     }
 
@@ -57,6 +66,20 @@ public final class DashboardPanel extends JPanel {
             new Rectangle(0, 0, queue.getWidth(), queue.getHeight())));
     }
 
+    public void setPlaylists(List<Playlist> playlists) { queue.setPlaylists(playlists); }
+    public void selectPlaylist(String name) { queue.selectPlaylist(name); }
+    public List<SessionPlanner.Choice> currentQueue() { return queue.currentChoices(); }
+    public void focusPlaylists() {
+        queue.scrollRectToVisible(new Rectangle(0, 0, queue.getWidth(), queue.getHeight()));
+        queue.focusSavedPlaylists();
+    }
+
+    public void showPlaylist(Playlist playlist, SessionPlanner.Plan plan) {
+        composer.showPlaylist(playlist.name(), plan);
+        queue.setPlan(plan);
+        queue.selectPlaylist(playlist.name());
+    }
+
     private JComponent header(Runnable importMedia) {
         JPanel header = new JPanel(new BorderLayout(20, 10));
         header.setOpaque(false);
@@ -76,7 +99,7 @@ public final class DashboardPanel extends JPanel {
     private JComponent content(Consumer<Track> onPlay, Consumer<String> notify,
                                Consumer<SessionPlanner.Request> onBuild,
                                SessionQueuePanel.Actions queueActions) {
-        JPanel content = new JPanel();
+        JPanel content = new ResponsiveColumn();
         content.setBackground(Theme.BLACK);
         content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
         composer = new SessionComposerPanel(notify, onBuild);
@@ -88,8 +111,8 @@ public final class DashboardPanel extends JPanel {
 
         queue = new SessionQueuePanel(queueActions);
         queue.setAlignmentX(Component.LEFT_ALIGNMENT);
-        queue.setPreferredSize(new Dimension(760, 330));
-        queue.setMaximumSize(new Dimension(Integer.MAX_VALUE, 350));
+        queue.setPreferredSize(new Dimension(760, 390));
+        queue.setMaximumSize(new Dimension(Integer.MAX_VALUE, 410));
         content.add(queue);
         content.add(Box.createVerticalStrut(26));
 
@@ -138,5 +161,18 @@ public final class DashboardPanel extends JPanel {
     private void playSelected(JTable table, Consumer<Track> onPlay) {
         int row = table.getSelectedRow();
         if (row >= 0 && row < shown.size()) onPlay.accept(shown.get(row));
+    }
+
+    private static final class ResponsiveColumn extends JPanel implements Scrollable {
+        private static final long serialVersionUID = 1L;
+        @Override public Dimension getPreferredScrollableViewportSize() { return getPreferredSize(); }
+        @Override public int getScrollableUnitIncrement(Rectangle visible, int orientation, int direction) {
+            return 16;
+        }
+        @Override public int getScrollableBlockIncrement(Rectangle visible, int orientation, int direction) {
+            return Math.max(100, visible.height - 32);
+        }
+        @Override public boolean getScrollableTracksViewportWidth() { return true; }
+        @Override public boolean getScrollableTracksViewportHeight() { return false; }
     }
 }

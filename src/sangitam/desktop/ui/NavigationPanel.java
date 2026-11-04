@@ -45,6 +45,8 @@ public final class NavigationPanel extends JPanel {
         add(navButton("Albums", AppIcons.Kind.MUSIC, () -> navigate.accept("albums")));
         add(Box.createVerticalStrut(6));
         add(navButton("Artists", AppIcons.Kind.MUSIC, () -> navigate.accept("artists")));
+        add(Box.createVerticalStrut(6));
+        add(navButton("Playlists", AppIcons.Kind.MUSIC, () -> navigate.accept("playlists")));
 
         add(Box.createVerticalGlue());
         String shortcut = System.getProperty("os.name", "").toLowerCase().contains("mac") ? "⌘K" : "Ctrl K";

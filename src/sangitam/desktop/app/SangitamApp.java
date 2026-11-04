@@ -16,7 +16,11 @@ public final class SangitamApp {
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
             Theme.install();
-            new MainFrame().setVisible(true);
+            MainFrame frame = new MainFrame();
+            frame.setVisible(true);
+            javax.swing.Timer firstPaint = new javax.swing.Timer(60, event -> frame.loadWorkspace());
+            firstPaint.setRepeats(false);
+            firstPaint.start();
         });
     }
 }

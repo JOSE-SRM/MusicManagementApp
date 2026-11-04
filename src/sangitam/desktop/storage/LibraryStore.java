@@ -2,6 +2,8 @@ package sangitam.desktop.storage;
 
 import sangitam.desktop.model.Track;
 import sangitam.desktop.model.TrackTags;
+import sangitam.desktop.model.Playlist;
+import sangitam.desktop.model.PlaybackMemory;
 import sangitam.desktop.history.ListenEvent;
 
 import java.net.URI;
@@ -21,7 +23,7 @@ import java.util.UUID;
 
 /** Small SQLite boundary: UI panels never know SQL or the database location. */
 public final class LibraryStore {
-    public record CatalogEntry(Track track, TrackTags tags, int playCount) { }
+    public record CatalogEntry(Track track, TrackTags tags, int playCount, boolean manualTags) { }
     private final Path database;
 
     public LibraryStore(Path database) { this.database = database.toAbsolutePath().normalize(); }
@@ -58,6 +60,19 @@ public final class LibraryStore {
             addColumn(statement, columns, "file_size", "INTEGER NOT NULL DEFAULT -1");
             addColumn(statement, columns, "file_modified", "INTEGER NOT NULL DEFAULT -1");
             addColumn(statement, columns, "play_count", "INTEGER NOT NULL DEFAULT 0");
+            addColumn(statement, columns, "genre_override", "INTEGER NOT NULL DEFAULT 0");
+            addColumn(statement, columns, "tags_override", "INTEGER NOT NULL DEFAULT 0");
+            addColumn(statement, columns, "analysis_version", "INTEGER NOT NULL DEFAULT 0");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS playlists (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE)");
+            statement.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS playlist_items (
+                    playlist_id INTEGER NOT NULL,
+                    position INTEGER NOT NULL,
+                    path TEXT NOT NULL,
+                    PRIMARY KEY (playlist_id, position)
+                )
+                """);
             statement.executeUpdate("""
                 CREATE TABLE IF NOT EXISTS listens (
                     source TEXT NOT NULL,
@@ -90,15 +105,18 @@ public final class LibraryStore {
         try (Connection connection = connect();
              PreparedStatement query = connection.prepareStatement(
                  "SELECT path, title, artist, album, duration_seconds, format, genre, " +
-                 "energy, activity, analyzed, file_size, file_modified, play_count FROM tracks " +
+                 "energy, activity, analyzed, file_size, file_modified, play_count, tags_override, analysis_version FROM tracks " +
                  "ORDER BY title COLLATE NOCASE, artist COLLATE NOCASE");
              ResultSet rows = query.executeQuery()) {
             while (rows.next()) {
                 Track track = new Track(Path.of(rows.getString(1)), rows.getString(2), rows.getString(3),
                     rows.getString(4), rows.getDouble(5), rows.getString(6), rows.getString(7));
-                TrackTags tags = new TrackTags(rows.getInt(8), rows.getInt(9), rows.getInt(10) == 1,
-                    rows.getLong(11), rows.getLong(12));
-                tracks.add(new CatalogEntry(track, tags, rows.getInt(13)));
+                boolean manual = rows.getInt(14) == 1;
+                boolean oldAnalysis = !manual && rows.getInt(15) < 2;
+                TrackTags tags = oldAnalysis ? TrackTags.pending()
+                    : new TrackTags(rows.getInt(8), rows.getInt(9), rows.getInt(10) == 1,
+                        rows.getLong(11), rows.getLong(12));
+                tracks.add(new CatalogEntry(track, tags, rows.getInt(13), manual));
             }
         }
         return tracks;
@@ -113,7 +131,7 @@ public final class LibraryStore {
                 ON CONFLICT(path) DO UPDATE SET
                     title=excluded.title, artist=excluded.artist, album=excluded.album,
                     duration_seconds=excluded.duration_seconds, format=excluded.format,
-                    genre=excluded.genre
+                    genre=CASE WHEN tracks.genre_override=1 THEN tracks.genre ELSE excluded.genre END
                 """)) {
                 for (Track track : tracks) {
                     upsert.setString(1, track.path().toString());
@@ -136,7 +154,8 @@ public final class LibraryStore {
 
     public void saveTags(Path path, TrackTags tags) throws SQLException {
         try (Connection connection = connect(); PreparedStatement update = connection.prepareStatement(
-            "UPDATE tracks SET energy=?, activity=?, analyzed=?, file_size=?, file_modified=? WHERE path=?")) {
+            "UPDATE tracks SET energy=?, activity=?, analyzed=?, file_size=?, file_modified=?, analysis_version=2 " +
+            "WHERE path=? AND tags_override=0")) {
             update.setInt(1, tags.energy());
             update.setInt(2, tags.activity());
             update.setInt(3, tags.analyzed() ? 1 : 0);
@@ -145,6 +164,117 @@ public final class LibraryStore {
             update.setString(6, path.toString());
             update.executeUpdate();
         }
+    }
+
+    /** Manual corrections take priority over future scans of the original file. */
+    public void updateTags(Path path, String genre, int energy, int activity, long size, long modified)
+        throws SQLException {
+        try (Connection connection = connect(); PreparedStatement update = connection.prepareStatement("""
+            UPDATE tracks SET genre=?, genre_override=1, energy=?, activity=?, analyzed=1,
+                file_size=?, file_modified=?, tags_override=1, analysis_version=2 WHERE path=?
+            """)) {
+            update.setString(1, genre);
+            update.setInt(2, energy);
+            update.setInt(3, activity);
+            update.setLong(4, size);
+            update.setLong(5, modified);
+            update.setString(6, path.toString());
+            update.executeUpdate();
+        }
+    }
+
+    public void savePlaylist(String name, List<Path> paths) throws SQLException {
+        if (name == null || name.isBlank() || paths.isEmpty())
+            throw new IllegalArgumentException("A playlist needs a name and at least one track");
+        try (Connection connection = connect()) {
+            connection.setAutoCommit(false);
+            try (PreparedStatement upsert = connection.prepareStatement(
+                    "INSERT INTO playlists(name) VALUES (?) ON CONFLICT(name) DO NOTHING");
+                 PreparedStatement idQuery = connection.prepareStatement("SELECT id FROM playlists WHERE name=?");
+                 PreparedStatement clear = connection.prepareStatement("DELETE FROM playlist_items WHERE playlist_id=?");
+                 PreparedStatement add = connection.prepareStatement(
+                    "INSERT INTO playlist_items(playlist_id, position, path) VALUES (?, ?, ?)")) {
+                upsert.setString(1, name.strip());
+                upsert.executeUpdate();
+                idQuery.setString(1, name.strip());
+                long id;
+                try (ResultSet row = idQuery.executeQuery()) {
+                    if (!row.next()) throw new SQLException("Could not find the playlist");
+                    id = row.getLong(1);
+                }
+                clear.setLong(1, id);
+                clear.executeUpdate();
+                for (int i = 0; i < paths.size(); i++) {
+                    add.setLong(1, id);
+                    add.setInt(2, i);
+                    add.setString(3, paths.get(i).toString());
+                    add.addBatch();
+                }
+                add.executeBatch();
+                connection.commit();
+            } catch (SQLException error) { connection.rollback(); throw error; }
+        }
+    }
+
+    public List<Playlist> loadPlaylists() throws SQLException {
+        List<Playlist> result = new ArrayList<>();
+        try (Connection connection = connect(); PreparedStatement query = connection.prepareStatement(
+                "SELECT id, name FROM playlists ORDER BY name COLLATE NOCASE");
+             PreparedStatement items = connection.prepareStatement(
+                "SELECT path FROM playlist_items WHERE playlist_id=? ORDER BY position");
+             ResultSet rows = query.executeQuery()) {
+            while (rows.next()) {
+                long id = rows.getLong(1);
+                items.setLong(1, id);
+                List<Path> paths = new ArrayList<>();
+                try (ResultSet files = items.executeQuery()) {
+                    while (files.next()) paths.add(Path.of(files.getString(1)));
+                }
+                result.add(new Playlist(id, rows.getString(2), paths));
+            }
+        }
+        return result;
+    }
+
+    public void deletePlaylist(long id) throws SQLException {
+        try (Connection connection = connect()) {
+            connection.setAutoCommit(false);
+            try (PreparedStatement items = connection.prepareStatement("DELETE FROM playlist_items WHERE playlist_id=?");
+                 PreparedStatement playlist = connection.prepareStatement("DELETE FROM playlists WHERE id=?")) {
+                items.setLong(1, id); items.executeUpdate();
+                playlist.setLong(1, id); playlist.executeUpdate();
+                connection.commit();
+            } catch (SQLException error) { connection.rollback(); throw error; }
+        }
+    }
+
+    public void savePlaybackMemory(PlaybackMemory memory) throws SQLException {
+        try (Connection connection = connect()) {
+            connection.setAutoCommit(false);
+            try (PreparedStatement upsert = connection.prepareStatement(
+                    "INSERT INTO app_state(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")) {
+                upsert.setString(1, "last_track"); upsert.setString(2, memory.path().toString()); upsert.addBatch();
+                upsert.setString(1, "last_position");
+                upsert.setString(2, Double.toString(Math.max(0, memory.positionSeconds()))); upsert.addBatch();
+                upsert.executeBatch();
+                connection.commit();
+            } catch (SQLException error) { connection.rollback(); throw error; }
+        }
+    }
+
+    public PlaybackMemory loadPlaybackMemory() throws SQLException {
+        String path = null;
+        double position = 0;
+        try (Connection connection = connect(); PreparedStatement query = connection.prepareStatement(
+                "SELECT key, value FROM app_state WHERE key IN ('last_track','last_position')");
+             ResultSet rows = query.executeQuery()) {
+            while (rows.next()) {
+                if (rows.getString(1).equals("last_track")) path = rows.getString(2);
+                else try { position = Double.parseDouble(rows.getString(2)); }
+                catch (NumberFormatException ignored) { position = 0; }
+            }
+        }
+        return path == null ? null : new PlaybackMemory(Path.of(path), position);
     }
 
     public void recordPlay(Path path) throws SQLException {

@@ -9,7 +9,7 @@ import java.util.function.Consumer;
 public final class AppMenuBar extends JMenuBar {
     private static final long serialVersionUID = 1L;
 
-    public AppMenuBar(Runnable openMedia, Runnable quickActions, Runnable playPause,
+    public AppMenuBar(Runnable openMedia, Runnable exportPlaylist, Runnable quickActions, Runnable playPause,
                       Runnable previousTrack, Runnable nextTrack, Runnable showSearch,
                       Runnable showDiscover,
                       Consumer<String> notify, Runnable exit) {
@@ -19,7 +19,7 @@ public final class AppMenuBar extends JMenuBar {
         file.add(item("Add files or folder…", AppIcons.Kind.FOLDER, KeyEvent.VK_O, openMedia));
         file.add(item("Open recent", AppIcons.Kind.MUSIC, 0, () -> notify.accept("Open recent selected")));
         JMenu export = menu("Export");
-        export.add(item("Export playlist…", AppIcons.Kind.MUSIC, 0, () -> notify.accept("Export playlist selected")));
+        export.add(item("Export current playlist…", AppIcons.Kind.MUSIC, 0, exportPlaylist));
         export.add(item("Export library report…", AppIcons.Kind.MUSIC, 0, () -> notify.accept("Export report selected")));
         file.add(export);
         file.addSeparator();

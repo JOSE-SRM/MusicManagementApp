@@ -24,6 +24,9 @@ public final class SessionComposerPanel extends JPanel {
         "<html>Choose an intent and build from your library.<br>You can edit the queue below.</html>",
         Theme.BODY, Theme.TEXT_MUTED);
     private final SoundscapeCanvas canvas = new SoundscapeCanvas();
+    private final JComponent controlsPanel;
+    private final JComponent previewPanel;
+    private boolean compact;
     private final transient Consumer<String> notify;
     private final transient Consumer<SessionPlanner.Request> onBuild;
 
@@ -34,8 +37,24 @@ public final class SessionComposerPanel extends JPanel {
         setBackground(Theme.SURFACE);
         setBorder(BorderFactory.createCompoundBorder(
             UiFactory.roundedBorder(Theme.DIVIDER, 20), Theme.padding(24, 26, 24, 26)));
-        add(controls(), BorderLayout.WEST);
-        add(preview(), BorderLayout.CENTER);
+        controlsPanel = controls();
+        previewPanel = preview();
+        add(controlsPanel, BorderLayout.WEST);
+        add(previewPanel, BorderLayout.CENTER);
+        refreshPreview();
+    }
+
+    /** Stacks controls above the canvas when the center workspace becomes narrow. */
+    public void setCompact(boolean value) {
+        if (compact == value) return;
+        compact = value;
+        removeAll();
+        setLayout(new BorderLayout(value ? 0 : 24, value ? 14 : 0));
+        controlsPanel.setPreferredSize(value ? new Dimension(0, 345) : new Dimension(350, 0));
+        add(controlsPanel, value ? BorderLayout.NORTH : BorderLayout.WEST);
+        add(previewPanel, BorderLayout.CENTER);
+        revalidate();
+        repaint();
     }
 
     private JComponent controls() {
@@ -46,7 +65,7 @@ public final class SessionComposerPanel extends JPanel {
 
         panel.add(UiFactory.label("Shape this session", Theme.HEADING, Theme.TEXT));
         panel.add(Box.createVerticalStrut(5));
-        panel.add(UiFactory.label("Start with how you want the next hour to feel.", Theme.BODY, Theme.TEXT_MUTED));
+        panel.add(UiFactory.label("Choose the music and time that fit this moment.", Theme.BODY, Theme.TEXT_MUTED));
         panel.add(Box.createVerticalStrut(20));
         panel.add(fieldLabel("Intent"));
         panel.add(Box.createVerticalStrut(8));
@@ -72,7 +91,10 @@ public final class SessionComposerPanel extends JPanel {
         energy.setMajorTickSpacing(25);
         energy.setPaintTicks(true);
         energy.setAlignmentX(Component.LEFT_ALIGNMENT);
-        energy.addChangeListener(event -> energyValue.setText(energy.getValue() + " · " + energyWord()));
+        energy.addChangeListener(event -> {
+            energyValue.setText(energy.getValue() + " · " + energyWord());
+            refreshPreview();
+        });
         panel.add(energy);
         panel.add(Box.createVerticalStrut(12));
 
@@ -84,6 +106,7 @@ public final class SessionComposerPanel extends JPanel {
         duration.setForeground(Theme.TEXT);
         duration.setBackground(Theme.SURFACE_RAISED);
         durationRow.add(duration, BorderLayout.CENTER);
+        duration.addActionListener(event -> refreshPreview());
         durationRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 34));
         panel.add(durationRow);
         panel.add(Box.createVerticalStrut(12));
@@ -92,6 +115,7 @@ public final class SessionComposerPanel extends JPanel {
         familiarOnly.setFont(Theme.SMALL);
         familiarOnly.setAlignmentX(Component.LEFT_ALIGNMENT);
         panel.add(familiarOnly);
+        familiarOnly.addActionListener(event -> refreshPreview());
         panel.add(Box.createVerticalStrut(17));
 
         JButton build = UiFactory.button("Build my session", AppIcons.of(AppIcons.Kind.PLAY, 15, Theme.BLACK), true);
@@ -132,6 +156,7 @@ public final class SessionComposerPanel extends JPanel {
             UiFactory.roundedBorder(selected ? Theme.BLUE : Theme.DIVIDER, 10), Theme.padding(7, 9, 7, 9)));
         button.addActionListener(event -> {
             intents.values().forEach(this::styleIntentButton);
+            refreshPreview();
             notify.accept(name + " intent selected");
         });
         intents.put(name, button);
@@ -162,10 +187,26 @@ public final class SessionComposerPanel extends JPanel {
             energy.getValue(), minutes, familiarOnly.isSelected()));
     }
 
+    private void refreshPreview() {
+        if (intents.isEmpty() || duration.getSelectedItem() == null) return;
+        String intent = intents.entrySet().stream().filter(entry -> entry.getValue().isSelected())
+            .map(Map.Entry::getKey).findFirst().orElse("Focus");
+        recipeTitle.setText(intent + " · " + energyWord());
+        recipeDetail.setText("<html>" + duration.getSelectedItem() + " · "
+            + (familiarOnly.isSelected() ? "familiar tracks first" : "mix familiar and new")
+            + "<br>Build, then edit or save the queue.</html>");
+    }
+
     public void showPlan(SessionPlanner.Plan plan) {
         recipeDetail.setText(plan.choices().isEmpty() ? "No playable tracks found. Add music first."
             : "<html>" + plan.choices().size() + " tracks · about "
                 + Math.round(plan.estimatedSeconds() / 60.0) + " minutes<br>See the editable queue below</html>");
+    }
+
+    public void showPlaylist(String name, SessionPlanner.Plan plan) {
+        recipeTitle.setText("Playlist · " + name);
+        recipeDetail.setText(plan.choices().size() + " tracks · about "
+            + Math.round(plan.estimatedSeconds() / 60.0) + " minutes. Edit or play below.");
     }
 
     private String energyWord() {
