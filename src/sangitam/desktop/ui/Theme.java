@@ -119,6 +119,13 @@ public final class Theme {
         UIManager.put("TabbedPane.foreground", TEXT);
         UIManager.put("TabbedPane.font", BODY_BOLD);
         UIManager.put("TabbedPane.selected", SURFACE_RAISED);
+        UIManager.put("TabbedPane.unselectedBackground", SURFACE);
+        UIManager.put("TabbedPane.light", DIVIDER);
+        UIManager.put("TabbedPane.highlight", DIVIDER);
+        UIManager.put("TabbedPane.shadow", DIVIDER);
+        UIManager.put("TabbedPane.darkShadow", DIVIDER);
+        UIManager.put("TabbedPane.selectHighlight", BLUE);
+        UIManager.put("TabbedPane.borderHightlightColor", DIVIDER);
         UIManager.put("Slider.background", SURFACE);
         UIManager.put("Slider.foreground", BLUE);
         UIManager.put("Slider.font", SMALL);

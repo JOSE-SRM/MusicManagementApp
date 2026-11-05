@@ -6,6 +6,7 @@ import sangitam.desktop.discovery.MusicBrainzProvider;
 import sangitam.desktop.discovery.MusicProvider;
 import sangitam.desktop.discovery.SpotifyProvider;
 import sangitam.desktop.discovery.YouTubeProvider;
+import sangitam.desktop.storage.ProviderCredentials;
 
 import javax.swing.*;
 import java.awt.*;
@@ -17,9 +18,7 @@ import java.util.function.Consumer;
 /** Searches remote catalogs without pretending those results are local audio files. */
 public final class DiscoverPanel extends JPanel {
     private static final long serialVersionUID = 1L;
-    private final JComboBox<MusicProvider> source = new JComboBox<>(new MusicProvider[] {
-        new MusicBrainzProvider(), new SpotifyProvider(), new YouTubeProvider(), new AppleMusicProvider()
-    });
+    private final JComboBox<MusicProvider> source = new JComboBox<>(new MusicProvider[] {new MusicBrainzProvider()});
     private final JTextField query = new JTextField();
     private final JButton search = UiFactory.button("Search catalog", null, true);
     private final JButton open = UiFactory.button("Open in provider", null, false);
@@ -116,9 +115,27 @@ public final class DiscoverPanel extends JPanel {
         });
         open.addActionListener(event -> openSelected(notify));
         providerChanged();
+        ProviderCredentials.preload(loaded -> SwingUtilities.invokeLater(this::refreshProviders));
     }
 
     public void focusSearch() { query.requestFocusInWindow(); }
+
+    public void refreshProviders() {
+        MusicProvider selectedProvider = (MusicProvider) source.getSelectedItem();
+        source.removeAllItems();
+        MusicProvider[] providers = {new MusicBrainzProvider(), new SpotifyProvider(),
+            new YouTubeProvider(), new AppleMusicProvider()};
+        for (MusicProvider provider : providers) source.addItem(provider);
+        if (selectedProvider != null) {
+            for (int i = 0; i < source.getItemCount(); i++) {
+                if (source.getItemAt(i).name().equals(selectedProvider.name())) {
+                    source.setSelectedIndex(i);
+                    break;
+                }
+            }
+        }
+        providerChanged();
+    }
 
     private void providerChanged() {
         if (activeSearch != null) activeSearch.cancel(true);

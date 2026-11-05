@@ -1,0 +1,1 @@
+call mvnw.cmd -q exec:java

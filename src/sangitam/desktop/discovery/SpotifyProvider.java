@@ -2,6 +2,7 @@ package sangitam.desktop.discovery;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import sangitam.desktop.storage.ProviderCredentials;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -11,13 +12,13 @@ import java.util.List;
 public final class SpotifyProvider implements MusicProvider {
     private final String token;
 
-    public SpotifyProvider() { this(System.getenv("SANGITAM_SPOTIFY_ACCESS_TOKEN")); }
+    public SpotifyProvider() { this(ProviderCredentials.get(ProviderCredentials.SPOTIFY_TOKEN, "SANGITAM_SPOTIFY_ACCESS_TOKEN")); }
     SpotifyProvider(String token) { this.token = token; }
 
     @Override public String name() { return "Spotify"; }
     @Override public String setupHint() {
         return available() ? "Catalog search · opens tracks in Spotify"
-            : "Set SANGITAM_SPOTIFY_ACCESS_TOKEN, then restart Sangitam";
+            : "Add a Spotify access token in Settings to search the catalog.";
     }
     @Override public boolean available() { return token != null && !token.isBlank(); }
 

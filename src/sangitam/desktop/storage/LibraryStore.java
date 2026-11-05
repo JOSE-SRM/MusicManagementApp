@@ -2,6 +2,8 @@ package sangitam.desktop.storage;
 
 import sangitam.desktop.model.Track;
 import sangitam.desktop.model.TrackTags;
+import sangitam.desktop.model.FileStamp;
+import sangitam.desktop.model.LibrarySource;
 import sangitam.desktop.model.Playlist;
 import sangitam.desktop.model.PlaybackMemory;
 import sangitam.desktop.history.ListenEvent;
@@ -18,12 +20,19 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
 /** Small SQLite boundary: UI panels never know SQL or the database location. */
 public final class LibraryStore {
-    public record CatalogEntry(Track track, TrackTags tags, int playCount, boolean manualTags) { }
+    private static final String SAVE_TAGS = """
+        UPDATE tracks SET energy=?, activity=?, analyzed=?, file_size=?, file_modified=?, analysis_version=2
+        WHERE path=? AND tags_override=0 AND (metadata_size<0 OR (metadata_size=? AND metadata_modified=?))
+        """;
+    public record CatalogEntry(Track track, TrackTags tags, int playCount, boolean manualTags,
+                               FileStamp stamp, boolean unavailable, long recentAt, boolean titleOverride,
+                               boolean artistOverride) { }
     private final Path database;
 
     public LibraryStore(Path database) { this.database = database.toAbsolutePath().normalize(); }
@@ -63,8 +72,22 @@ public final class LibraryStore {
             addColumn(statement, columns, "genre_override", "INTEGER NOT NULL DEFAULT 0");
             addColumn(statement, columns, "tags_override", "INTEGER NOT NULL DEFAULT 0");
             addColumn(statement, columns, "analysis_version", "INTEGER NOT NULL DEFAULT 0");
+            addColumn(statement, columns, "metadata_size", "INTEGER NOT NULL DEFAULT -1");
+            addColumn(statement, columns, "metadata_modified", "INTEGER NOT NULL DEFAULT -1");
+            addColumn(statement, columns, "unavailable", "INTEGER NOT NULL DEFAULT 0");
+            addColumn(statement, columns, "title_override", "INTEGER NOT NULL DEFAULT 0");
+            addColumn(statement, columns, "artist_override", "INTEGER NOT NULL DEFAULT 0");
+            addColumn(statement, columns, "album_override", "INTEGER NOT NULL DEFAULT 0");
+            addColumn(statement, columns, "added_at", "INTEGER NOT NULL DEFAULT 0");
+            addColumn(statement, columns, "last_played_at", "INTEGER NOT NULL DEFAULT 0");
+            statement.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS library_sources (
+                    path TEXT PRIMARY KEY,
+                    recursive INTEGER NOT NULL
+                )
+                """);
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-            statement.executeUpdate("CREATE TABLE IF NOT EXISTS playlists (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE)");
+            if (!columns.contains("added_at")) statement.executeUpdate("UPDATE tracks SET added_at=rowid");
             statement.executeUpdate("""
                 CREATE TABLE IF NOT EXISTS playlist_items (
                     playlist_id INTEGER NOT NULL,
@@ -87,6 +110,13 @@ public final class LibraryStore {
                 )
                 """);
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS listens_time ON listens(played_at_ms)");
+            statement.executeUpdate("CREATE INDEX IF NOT EXISTS listens_local_time ON listens(local_path,played_at_ms)");
+            if (!columns.contains("last_played_at")) statement.executeUpdate("""
+                UPDATE tracks SET last_played_at=COALESCE(
+                    (SELECT MAX(played_at_ms) FROM listens WHERE local_path=tracks.path),0)
+                """);
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS library_exclusions (path TEXT PRIMARY KEY)");
+            CollectionStore.initialize(connection);
         }
     }
 
@@ -105,7 +135,9 @@ public final class LibraryStore {
         try (Connection connection = connect();
              PreparedStatement query = connection.prepareStatement(
                  "SELECT path, title, artist, album, duration_seconds, format, genre, " +
-                 "energy, activity, analyzed, file_size, file_modified, play_count, tags_override, analysis_version FROM tracks " +
+                 "energy, activity, analyzed, file_size, file_modified, play_count, tags_override, analysis_version, " +
+                 "metadata_size, metadata_modified, unavailable, MAX(added_at,last_played_at), title_override, " +
+                 "artist_override FROM tracks " +
                  "ORDER BY title COLLATE NOCASE, artist COLLATE NOCASE");
              ResultSet rows = query.executeQuery()) {
             while (rows.next()) {
@@ -116,24 +148,63 @@ public final class LibraryStore {
                 TrackTags tags = oldAnalysis ? TrackTags.pending()
                     : new TrackTags(rows.getInt(8), rows.getInt(9), rows.getInt(10) == 1,
                         rows.getLong(11), rows.getLong(12));
-                tracks.add(new CatalogEntry(track, tags, rows.getInt(13), manual));
+                FileStamp stamp = new FileStamp(rows.getLong(16), rows.getLong(17));
+                tracks.add(new CatalogEntry(track, tags, rows.getInt(13), manual, stamp, rows.getInt(18) == 1,
+                    rows.getLong(19), rows.getBoolean(20), rows.getBoolean(21)));
             }
         }
         return tracks;
     }
 
     public void saveAll(List<Track> tracks) throws SQLException {
+        saveScan(tracks, Map.of(), Set.of(), List.of(), Map.of());
+    }
+
+    public List<LibrarySource> loadSources() throws SQLException {
+        List<LibrarySource> sources = new ArrayList<>();
+        try (Connection connection = connect(); Statement query = connection.createStatement();
+             ResultSet rows = query.executeQuery("SELECT path, recursive FROM library_sources ORDER BY path")) {
+            while (rows.next()) sources.add(new LibrarySource(Path.of(rows.getString(1)), rows.getBoolean(2)));
+        }
+        return sources;
+    }
+
+    /** Saves metadata, source choices and availability together. Missing files keep their indexed rows. */
+    public void saveScan(List<Track> changed, Map<Path, FileStamp> available, Set<Path> unavailable,
+                         List<LibrarySource> sources, Map<Path, TrackTags> measured) throws SQLException {
+        saveScan(changed, available, unavailable, sources, measured, List.of());
+    }
+
+    public void saveScan(List<Track> changed, Map<Path, FileStamp> available, Set<Path> unavailable,
+                         List<LibrarySource> sources, Map<Path, TrackTags> measured,
+                         List<Path> restoredPaths) throws SQLException {
         try (Connection connection = connect()) {
             connection.setAutoCommit(false);
             try (PreparedStatement upsert = connection.prepareStatement("""
-                INSERT INTO tracks(path, title, artist, album, duration_seconds, format, genre)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO tracks(path, title, artist, album, duration_seconds, format, genre,
+                    metadata_size, metadata_modified, added_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET
-                    title=excluded.title, artist=excluded.artist, album=excluded.album,
+                    title=CASE WHEN tracks.title_override=1 THEN tracks.title ELSE excluded.title END,
+                    artist=CASE WHEN tracks.artist_override=1 THEN tracks.artist ELSE excluded.artist END,
+                    album=CASE WHEN tracks.album_override=1 THEN tracks.album ELSE excluded.album END,
                     duration_seconds=excluded.duration_seconds, format=excluded.format,
+                    metadata_size=excluded.metadata_size, metadata_modified=excluded.metadata_modified, unavailable=0,
                     genre=CASE WHEN tracks.genre_override=1 THEN tracks.genre ELSE excluded.genre END
-                """)) {
-                for (Track track : tracks) {
+                """);
+                 PreparedStatement saveSource = connection.prepareStatement("""
+                    INSERT INTO library_sources(path, recursive) VALUES (?, ?)
+                    ON CONFLICT(path) DO UPDATE SET recursive=excluded.recursive
+                    """);
+                 PreparedStatement online = connection.prepareStatement(
+                    "UPDATE tracks SET unavailable=0 WHERE path=? AND unavailable=1");
+                 PreparedStatement offline = connection.prepareStatement(
+                    "UPDATE tracks SET unavailable=1 WHERE path=? AND unavailable=0");
+                 PreparedStatement saveTags = connection.prepareStatement(SAVE_TAGS);
+                 PreparedStatement restore = connection.prepareStatement("DELETE FROM library_exclusions WHERE path=?")) {
+                long addedAt = System.currentTimeMillis();
+                for (Track track : changed) {
+                    FileStamp stamp = available.get(track.path());
                     upsert.setString(1, track.path().toString());
                     upsert.setString(2, track.title());
                     upsert.setString(3, track.artist());
@@ -141,9 +212,30 @@ public final class LibraryStore {
                     upsert.setDouble(5, track.durationSeconds());
                     upsert.setString(6, track.format());
                     upsert.setString(7, track.genre());
+                    upsert.setLong(8, stamp == null ? -1 : stamp.size());
+                    upsert.setLong(9, stamp == null ? -1 : stamp.modifiedMillis());
+                    upsert.setLong(10, addedAt);
                     upsert.addBatch();
                 }
                 upsert.executeBatch();
+                for (LibrarySource source : sources) {
+                    saveSource.setString(1, source.path().toString());
+                    saveSource.setBoolean(2, source.recursive());
+                    saveSource.addBatch();
+                }
+                saveSource.executeBatch();
+                updateAvailability(online, available.keySet());
+                updateAvailability(offline, unavailable);
+                for (var entry : measured.entrySet()) {
+                    bindTags(saveTags, entry.getKey(), entry.getValue());
+                    saveTags.addBatch();
+                }
+                saveTags.executeBatch();
+                for (Path path : restoredPaths) {
+                    restore.setString(1, path.toString());
+                    restore.addBatch();
+                }
+                restore.executeBatch();
                 connection.commit();
             } catch (SQLException error) {
                 connection.rollback();
@@ -152,18 +244,95 @@ public final class LibraryStore {
         }
     }
 
+    public record DetailChanges(String title, String artist, String album, String genre, Integer energy, Integer movement) { }
+
+    public void updateDetails(List<Path> paths, DetailChanges edit) throws SQLException {
+        try (Connection connection = connect(); PreparedStatement update = connection.prepareStatement("""
+            UPDATE tracks SET title=COALESCE(?1,title), title_override=MAX(title_override,?1 IS NOT NULL),
+                artist=COALESCE(?2,artist), artist_override=MAX(artist_override,?2 IS NOT NULL),
+                album=COALESCE(?3,album), album_override=MAX(album_override,?3 IS NOT NULL),
+                genre=COALESCE(?4,genre), genre_override=MAX(genre_override,?4 IS NOT NULL),
+                energy=COALESCE(?5,energy), activity=COALESCE(?6,activity),
+                tags_override=MAX(tags_override,?5 IS NOT NULL), analyzed=MAX(analyzed,?5 IS NOT NULL)
+            WHERE path=?7
+            """)) {
+            connection.setAutoCommit(false);
+            update.setString(1, edit.title());
+            update.setString(2, edit.artist());
+            update.setString(3, edit.album());
+            update.setString(4, edit.genre());
+            update.setObject(5, edit.energy());
+            update.setObject(6, edit.movement());
+            try {
+                for (Path path : paths) {
+                    update.setString(7, path.toString());
+                    update.addBatch();
+                }
+                update.executeBatch();
+                connection.commit();
+            } catch (SQLException error) { connection.rollback(); throw error; }
+        }
+    }
+
+    public List<Path> loadExclusions() throws SQLException {
+        List<Path> exclusions = new ArrayList<>();
+        try (Connection connection = connect(); Statement query = connection.createStatement();
+             ResultSet rows = query.executeQuery("SELECT path FROM library_exclusions")) {
+            while (rows.next()) exclusions.add(Path.of(rows.getString(1)));
+        }
+        return exclusions;
+    }
+
+    /** Removes catalog entries only. The paths in playlists and listening history survive. */
+    public void removeFromLibrary(List<Path> paths, Path scope) throws SQLException {
+        try (Connection connection = connect(); PreparedStatement remove = connection.prepareStatement(
+                 "DELETE FROM tracks WHERE path=?");
+             PreparedStatement exclude = connection.prepareStatement("INSERT OR IGNORE INTO library_exclusions VALUES (?)")) {
+            connection.setAutoCommit(false);
+            try {
+                for (Path path : paths) {
+                    remove.setString(1, path.toString());
+                    remove.addBatch();
+                    if (scope == null) {
+                        exclude.setString(1, path.toString());
+                        exclude.addBatch();
+                    }
+                }
+                if (scope != null) {
+                    exclude.setString(1, scope.toString());
+                    exclude.addBatch();
+                }
+                remove.executeBatch();
+                exclude.executeBatch();
+                connection.commit();
+            } catch (SQLException error) { connection.rollback(); throw error; }
+        }
+    }
+
+    private void updateAvailability(PreparedStatement update, Set<Path> paths) throws SQLException {
+        for (Path path : paths) {
+            update.setString(1, path.toString());
+            update.addBatch();
+        }
+        update.executeBatch();
+    }
+
     public void saveTags(Path path, TrackTags tags) throws SQLException {
-        try (Connection connection = connect(); PreparedStatement update = connection.prepareStatement(
-            "UPDATE tracks SET energy=?, activity=?, analyzed=?, file_size=?, file_modified=?, analysis_version=2 " +
-            "WHERE path=? AND tags_override=0")) {
-            update.setInt(1, tags.energy());
-            update.setInt(2, tags.activity());
-            update.setInt(3, tags.analyzed() ? 1 : 0);
-            update.setLong(4, tags.fileSize());
-            update.setLong(5, tags.modifiedMillis());
-            update.setString(6, path.toString());
+        try (Connection connection = connect(); PreparedStatement update = connection.prepareStatement(SAVE_TAGS)) {
+            bindTags(update, path, tags);
             update.executeUpdate();
         }
+    }
+
+    private void bindTags(PreparedStatement update, Path path, TrackTags tags) throws SQLException {
+        update.setInt(1, tags.energy());
+        update.setInt(2, tags.activity());
+        update.setInt(3, tags.analyzed() ? 1 : 0);
+        update.setLong(4, tags.fileSize());
+        update.setLong(5, tags.modifiedMillis());
+        update.setString(6, path.toString());
+        update.setLong(7, tags.fileSize());
+        update.setLong(8, tags.modifiedMillis());
     }
 
     /** Manual corrections take priority over future scans of the original file. */
@@ -189,12 +358,14 @@ public final class LibraryStore {
         try (Connection connection = connect()) {
             connection.setAutoCommit(false);
             try (PreparedStatement upsert = connection.prepareStatement(
-                    "INSERT INTO playlists(name) VALUES (?) ON CONFLICT(name) DO NOTHING");
-                 PreparedStatement idQuery = connection.prepareStatement("SELECT id FROM playlists WHERE name=?");
+                    "INSERT INTO playlists(name,updated_at) VALUES (?,?) " +
+                    "ON CONFLICT(folder_id,name) DO UPDATE SET updated_at=excluded.updated_at");
+                 PreparedStatement idQuery = connection.prepareStatement("SELECT id FROM playlists WHERE folder_id=0 AND name=?");
                  PreparedStatement clear = connection.prepareStatement("DELETE FROM playlist_items WHERE playlist_id=?");
                  PreparedStatement add = connection.prepareStatement(
                     "INSERT INTO playlist_items(playlist_id, position, path) VALUES (?, ?, ?)")) {
                 upsert.setString(1, name.strip());
+                upsert.setLong(2, System.currentTimeMillis());
                 upsert.executeUpdate();
                 idQuery.setString(1, name.strip());
                 long id;
@@ -219,7 +390,7 @@ public final class LibraryStore {
     public List<Playlist> loadPlaylists() throws SQLException {
         List<Playlist> result = new ArrayList<>();
         try (Connection connection = connect(); PreparedStatement query = connection.prepareStatement(
-                "SELECT id, name FROM playlists ORDER BY name COLLATE NOCASE");
+                "SELECT id, name, folder_id, description, updated_at FROM playlists ORDER BY name COLLATE NOCASE, id");
              PreparedStatement items = connection.prepareStatement(
                 "SELECT path FROM playlist_items WHERE playlist_id=? ORDER BY position");
              ResultSet rows = query.executeQuery()) {
@@ -230,7 +401,7 @@ public final class LibraryStore {
                 try (ResultSet files = items.executeQuery()) {
                     while (files.next()) paths.add(Path.of(files.getString(1)));
                 }
-                result.add(new Playlist(id, rows.getString(2), paths));
+                result.add(new Playlist(id, rows.getString(2), paths, rows.getLong(3), rows.getString(4), rows.getLong(5)));
             }
         }
         return result;
@@ -240,9 +411,12 @@ public final class LibraryStore {
         try (Connection connection = connect()) {
             connection.setAutoCommit(false);
             try (PreparedStatement items = connection.prepareStatement("DELETE FROM playlist_items WHERE playlist_id=?");
-                 PreparedStatement playlist = connection.prepareStatement("DELETE FROM playlists WHERE id=?")) {
+                 PreparedStatement playlist = connection.prepareStatement("DELETE FROM playlists WHERE id=?");
+                 PreparedStatement pin = connection.prepareStatement(
+                     "DELETE FROM library_pins WHERE kind='PLAYLIST' AND item=?")) {
                 items.setLong(1, id); items.executeUpdate();
                 playlist.setLong(1, id); playlist.executeUpdate();
+                pin.setString(1, Long.toString(id)); pin.executeUpdate();
                 connection.commit();
             } catch (SQLException error) { connection.rollback(); throw error; }
         }
@@ -283,7 +457,7 @@ public final class LibraryStore {
             try (PreparedStatement lookup = connection.prepareStatement(
                     "SELECT title, artist, album FROM tracks WHERE path=?");
                  PreparedStatement update = connection.prepareStatement(
-                    "UPDATE tracks SET play_count=play_count+1 WHERE path=?");
+                    "UPDATE tracks SET play_count=play_count+1,last_played_at=? WHERE path=?");
                  PreparedStatement insert = connection.prepareStatement("""
                     INSERT INTO listens(source, source_key, title, artist, album, played_at_ms, link, local_path)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -297,7 +471,8 @@ public final class LibraryStore {
                     insert.setString(4, row.getString(2));
                     insert.setString(5, row.getString(3));
                 }
-                update.setString(1, path.toString());
+                update.setLong(1, System.currentTimeMillis());
+                update.setString(2, path.toString());
                 update.executeUpdate();
                 insert.setLong(6, System.currentTimeMillis());
                 insert.setString(7, null);
@@ -358,7 +533,7 @@ public final class LibraryStore {
         return listens;
     }
 
-    private Connection connect() throws SQLException {
+    Connection connect() throws SQLException {
         Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database);
         try (Statement statement = connection.createStatement()) {
             statement.execute("PRAGMA busy_timeout=5000");

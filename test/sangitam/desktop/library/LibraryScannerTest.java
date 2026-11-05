@@ -44,6 +44,19 @@ class LibraryScannerTest {
         assertEquals(1, shallow.tracks().size());
     }
 
+    @Test void reportsUnavailableSourcesAndStillScansAvailableFiles() throws Exception {
+        Path missing = folder.resolve("disconnected-folder");
+        Path valid = folder.resolve("silence.wav");
+        writeSilentWav(valid);
+
+        LibraryScanner.Result result = new LibraryScanner().scan(List.of(missing, valid), true,
+            ignored -> { }, () -> false);
+        assertEquals(List.of(valid), result.tracks().stream().map(Track::path).toList());
+        assertEquals(1, result.skipped());
+        assertEquals(1, result.errors().size());
+        assertTrue(result.errors().getFirst().contains(missing.toString()));
+    }
+
     private void writeSilentWav(Path output) throws Exception {
         AudioFormat format = new AudioFormat(44_100, 16, 1, true, false);
         byte[] samples = new byte[44_100 * 2 / 4];

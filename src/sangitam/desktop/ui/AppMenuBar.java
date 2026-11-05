@@ -8,10 +8,14 @@ import java.util.function.Consumer;
 /** Application menus. Live library and playback actions coexist with clearly notified future commands. */
 public final class AppMenuBar extends JMenuBar {
     private static final long serialVersionUID = 1L;
+    private JCheckBoxMenuItem shuffleItem;
+    private JCheckBoxMenuItem repeatItem;
+    private JCheckBoxMenuItem libraryItem;
 
     public AppMenuBar(Runnable openMedia, Runnable exportPlaylist, Runnable quickActions, Runnable playPause,
                       Runnable previousTrack, Runnable nextTrack, Runnable showSearch,
-                      Runnable showDiscover,
+                      Runnable showDiscover, Runnable preferences, Runnable toggleLibrary,
+                      Runnable toggleShuffle, Runnable toggleRepeat, Runnable rescanLibrary,
                       Consumer<String> notify, Runnable exit) {
         setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, Theme.DIVIDER));
 
@@ -34,7 +38,7 @@ public final class AppMenuBar extends JMenuBar {
         edit.add(item("Select all", AppIcons.Kind.MUSIC, KeyEvent.VK_A, () -> notify.accept("Select all selected")));
         edit.add(item("Find…", AppIcons.Kind.SEARCH, KeyEvent.VK_F, showSearch));
         edit.add(item("Discover online…", AppIcons.Kind.SEARCH, 0, showDiscover));
-        edit.add(item("Preferences…", AppIcons.Kind.SETTINGS, 0, () -> notify.accept("Preferences selected")));
+        edit.add(item("Preferences…", AppIcons.Kind.SETTINGS, 0, preferences));
 
         JMenu view = menu("View");
         ButtonGroup density = new ButtonGroup();
@@ -43,7 +47,9 @@ public final class AppMenuBar extends JMenuBar {
         density.add(comfortable); density.add(compact);
         view.add(comfortable); view.add(compact);
         view.addSeparator();
-        view.add(checkItem("Show library", true, notify));
+        libraryItem = checkActionItem("Show library", toggleLibrary);
+        libraryItem.setSelected(true);
+        view.add(libraryItem);
         view.add(checkItem("Show player bar", true, notify));
         JMenu sort = menu("Sort library by");
         sort.add(item("Title", AppIcons.Kind.MUSIC, 0, () -> notify.accept("Library sorted by title")));
@@ -57,8 +63,20 @@ public final class AppMenuBar extends JMenuBar {
         playback.add(item("Previous track", AppIcons.Kind.PREVIOUS, 0, previousTrack));
         playback.add(item("Next track", AppIcons.Kind.NEXT, 0, nextTrack));
         playback.addSeparator();
-        playback.add(checkItem("Shuffle", false, notify));
-        playback.add(checkItem("Repeat", false, notify));
+        shuffleItem = checkActionItem("Shuffle", toggleShuffle);
+        repeatItem = checkActionItem("Repeat current track", toggleRepeat);
+        playback.add(shuffleItem);
+        playback.add(repeatItem);
+
+        JMenu library = menu("Library");
+        library.add(item("Add files or folder…", AppIcons.Kind.FOLDER, 0, openMedia));
+        library.add(item("Rescan library…", AppIcons.Kind.FOLDER, 0, rescanLibrary));
+        library.add(item("Search local library…", AppIcons.Kind.SEARCH, 0, showSearch));
+        library.add(item("Show or hide library panel", AppIcons.Kind.MUSIC, 0, toggleLibrary));
+
+        JMenu tools = menu("Tools");
+        tools.add(item("Settings…", AppIcons.Kind.SETTINGS, 0, preferences));
+        tools.add(item("Quick actions…", AppIcons.Kind.SEARCH, 0, quickActions));
 
         JMenu help = menu("Help");
         help.add(item("Keyboard shortcuts", AppIcons.Kind.HELP, 0, () -> notify.accept("Keyboard shortcuts selected")));
@@ -67,8 +85,12 @@ public final class AppMenuBar extends JMenuBar {
         help.addSeparator();
         help.add(item("About Sangitam", AppIcons.Kind.MUSIC, 0, () -> notify.accept("Sangitam desktop prototype")));
 
-        add(file); add(edit); add(view); add(playback); add(help);
+        add(file); add(edit); add(view); add(playback); add(library); add(tools); add(help);
     }
+
+    public void setShuffleSelected(boolean selected) { shuffleItem.setSelected(selected); }
+    public void setRepeatSelected(boolean selected) { repeatItem.setSelected(selected); }
+    public void setLibrarySelected(boolean selected) { libraryItem.setSelected(selected); }
 
     private JMenu menu(String text) {
         JMenu menu = new JMenu(text);
@@ -91,6 +113,12 @@ public final class AppMenuBar extends JMenuBar {
     private JCheckBoxMenuItem checkItem(String text, boolean selected, Consumer<String> notify) {
         JCheckBoxMenuItem item = new JCheckBoxMenuItem(text, selected);
         item.addActionListener(event -> notify.accept(text + (item.isSelected() ? " enabled" : " disabled")));
+        return item;
+    }
+
+    private JCheckBoxMenuItem checkActionItem(String text, Runnable action) {
+        JCheckBoxMenuItem item = new JCheckBoxMenuItem(text, false);
+        item.addActionListener(event -> action.run());
         return item;
     }
 

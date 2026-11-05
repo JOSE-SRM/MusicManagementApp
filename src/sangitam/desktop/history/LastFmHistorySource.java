@@ -1,5 +1,7 @@
 package sangitam.desktop.history;
 
+import sangitam.desktop.storage.ProviderCredentials;
+
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -14,7 +16,7 @@ public final class LastFmHistorySource implements HistorySource {
     private final String apiKey;
 
     public LastFmHistorySource(String username) {
-        this(username, System.getenv("SANGITAM_LASTFM_API_KEY"));
+        this(username, ProviderCredentials.get(ProviderCredentials.LASTFM_KEY, "SANGITAM_LASTFM_API_KEY"));
     }
     LastFmHistorySource(String username, String apiKey) {
         this.username = username == null ? "" : username.strip();
@@ -23,7 +25,7 @@ public final class LastFmHistorySource implements HistorySource {
     @Override public String name() { return "Last.fm"; }
     @Override public boolean available() { return !username.isBlank() && apiKey != null && !apiKey.isBlank(); }
     @Override public String setupHint() {
-        return apiKey == null || apiKey.isBlank() ? "Set SANGITAM_LASTFM_API_KEY and enter your username."
+        return apiKey == null || apiKey.isBlank() ? "Add a Last.fm API key in Settings and enter your username."
             : "Enter your Last.fm username.";
     }
 

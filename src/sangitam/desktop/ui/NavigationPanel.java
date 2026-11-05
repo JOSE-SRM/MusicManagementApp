@@ -9,7 +9,7 @@ public final class NavigationPanel extends JPanel {
     private static final long serialVersionUID = 1L;
 
     public NavigationPanel(Consumer<String> navigate, Runnable importMedia, Runnable toggleLibrary,
-                           Runnable quickActions, Consumer<String> notify) {
+                           Runnable quickActions, Runnable openSettings) {
         super();
         setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
         setBackground(Theme.BLACK);
@@ -54,7 +54,7 @@ public final class NavigationPanel extends JPanel {
         quick.setFont(Theme.SMALL);
         add(quick);
         add(Box.createVerticalStrut(6));
-        add(navButton("Settings", AppIcons.Kind.SETTINGS, () -> notify.accept("Settings selected")));
+        add(navButton("Settings", AppIcons.Kind.SETTINGS, openSettings));
     }
 
     private JButton navButton(String text, AppIcons.Kind icon, Runnable action) {

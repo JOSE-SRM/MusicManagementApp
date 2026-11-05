@@ -10,15 +10,19 @@ import javax.swing.SwingUtilities;
 import java.nio.file.Files;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
+import java.util.function.LongConsumer;
 
 /** MP3/WAV decoder adapter. Only this class touches JavaFX; every visible component remains Swing. */
 public final class JavaFxPlayerService implements PlayerService {
+    private static final System.Logger LOG = System.getLogger(JavaFxPlayerService.class.getName());
     private final CompletableFuture<Void> ready = new CompletableFuture<>();
+    private CompletableFuture<Void> queued = ready;
     private volatile PlaybackState state = PlaybackState.idle();
     private volatile Consumer<PlaybackState> listener = ignored -> { };
     private volatile boolean closed;
+    private volatile long request;
     private MediaPlayer player; // accessed only on the JavaFX application thread
-    private double volume = 0.72;
+    private volatile double volume = 0.72;
     private long lastPositionNotice;
 
     public JavaFxPlayerService() {
@@ -30,7 +34,6 @@ public final class JavaFxPlayerService implements PlayerService {
                 });
             } catch (Throwable error) {
                 ready.completeExceptionally(error);
-                fail(null, "Audio system could not start: " + message(error));
             }
         }, "sangitam-audio-startup");
         startup.setDaemon(true);
@@ -39,21 +42,29 @@ public final class JavaFxPlayerService implements PlayerService {
 
     @Override public void setListener(Consumer<PlaybackState> listener) {
         this.listener = listener;
-        SwingUtilities.invokeLater(() -> listener.accept(state));
+        SwingUtilities.invokeLater(() -> { if (!closed) listener.accept(state); });
     }
 
     @Override public PlaybackState state() { return state; }
 
-    @Override public void play(Track track, double startSeconds) {
-        publish(new PlaybackState(track, PlaybackState.Status.LOADING, 0, track.durationSeconds(), null));
-        onAudioThread(() -> open(track, startSeconds));
+    @Override public synchronized void play(Track track, double startSeconds) {
+        if (closed) return;
+        long id = ++request;
+        publish(id, new PlaybackState(track, PlaybackState.Status.LOADING, startSeconds, track.durationSeconds(), null));
+        onAudioThread(() -> { if (id == request) open(id, track, startSeconds); })
+            .exceptionally(error -> {
+                fail(id, track, "JavaFX audio is unavailable. Check the installation or install VLC.");
+                return null;
+            });
     }
 
-    private void open(Track track, double startSeconds) {
-        if (player != null) player.dispose();
+    private void open(long id, Track track, double startSeconds) {
+        MediaPlayer old = player;
         player = null;
+        if (old != null) old.dispose();
+        lastPositionNotice = 0;
         if (!Files.isRegularFile(track.path())) {
-            fail(track, "File is missing: " + track.path().getFileName());
+            fail(id, track, "File is unavailable. Reconnect its drive or import it from its new location.");
             return;
         }
         try {
@@ -62,61 +73,85 @@ public final class JavaFxPlayerService implements PlayerService {
             player = next;
             next.setVolume(volume);
             media.setOnError(() -> {
-                if (next == player) fail(track, "Cannot read audio: " + message(media.getError()));
+                if (next == player) fail(id, track, "Cannot read audio: " + message(media.getError()));
             });
             next.setOnError(() -> {
-                if (next == player) fail(track, "Playback failed: " + message(next.getError()));
+                if (next == player) fail(id, track, "Playback failed: " + message(next.getError()));
             });
             next.setOnReady(() -> {
-                if (next != player) return;
+                if (next != player || id != request) return;
                 double duration = next.getTotalDuration().toSeconds();
-                double length = Double.isFinite(duration) ? duration : track.durationSeconds();
-                double start = Math.max(0, Math.min(startSeconds, Math.max(0, length - 1)));
-                publish(new PlaybackState(track, PlaybackState.Status.PAUSED, start, length, null));
+                boolean seekable = Double.isFinite(duration) && duration > 0;
+                double length = seekable ? duration : track.durationSeconds();
+                double start = seekable ? Math.max(0, Math.min(startSeconds, Math.max(0, length - 0.001))) : 0;
+                publish(id, new PlaybackState(track, PlaybackState.Status.LOADING, start, length, null, seekable));
                 if (start > 0) next.seek(Duration.seconds(start));
                 next.play();
             });
-            next.setOnPlaying(() -> updateStatus(next, PlaybackState.Status.PLAYING));
-            next.setOnPaused(() -> updateStatus(next, PlaybackState.Status.PAUSED));
+            next.setOnPlaying(() -> updateStatus(id, next, PlaybackState.Status.PLAYING));
+            next.setOnPaused(() -> updateStatus(id, next, PlaybackState.Status.PAUSED));
             next.setOnEndOfMedia(() -> {
-                if (next == player) publish(new PlaybackState(track, PlaybackState.Status.ENDED,
-                    state.durationSeconds(), state.durationSeconds(), null));
+                if (next == player) publish(id, new PlaybackState(track, PlaybackState.Status.ENDED,
+                    state.durationSeconds(), state.durationSeconds(), null, false));
             });
             next.currentTimeProperty().addListener((observable, before, now) -> {
-                if (next != player) return;
+                if (next != player || id != request) return;
                 long clock = System.nanoTime();
-                if (clock - lastPositionNotice < 200_000_000L) return;
-                lastPositionNotice = clock;
                 PlaybackState current = state;
-                publish(new PlaybackState(track, current.status(), now.toSeconds(),
-                    current.durationSeconds(), current.error()));
+                if (current.status() == PlaybackState.Status.ERROR || current.status() == PlaybackState.Status.ENDED
+                    || (current.status() == PlaybackState.Status.PLAYING
+                        && clock - lastPositionNotice < 100_000_000L)) return;
+                lastPositionNotice = clock;
+                publish(id, new PlaybackState(track, current.status(), now.toSeconds(),
+                    current.durationSeconds(), current.error(), current.seekable()));
             });
         } catch (Exception error) {
-            fail(track, "Cannot open audio: " + message(error));
+            fail(id, track, "JavaFX could not open audio. Check the format or try VLC. " + message(error));
         }
     }
 
-    private void updateStatus(MediaPlayer source, PlaybackState.Status status) {
-        if (source != player) return;
+    private void updateStatus(long id, MediaPlayer source, PlaybackState.Status status) {
+        if (source != player || id != request) return;
         PlaybackState current = state;
-        publish(new PlaybackState(current.track(), status, source.getCurrentTime().toSeconds(),
-            current.durationSeconds(), null));
+        if (current.status() == PlaybackState.Status.ERROR || current.status() == PlaybackState.Status.ENDED) return;
+        publish(id, new PlaybackState(current.track(), status, source.getCurrentTime().toSeconds(),
+            current.durationSeconds(), null, current.seekable()));
     }
 
-    @Override public void pause() { onAudioThread(() -> { if (player != null) player.pause(); }); }
+    @Override public void pause() { transport(id -> { if (player != null) player.pause(); }); }
 
-    @Override public void resume() {
-        onAudioThread(() -> {
-            if (player == null) return;
-            if (state.status() == PlaybackState.Status.ENDED) player.seek(Duration.ZERO);
-            player.play();
+    @Override public void stop() {
+        transport(id -> {
+            PlaybackState current = state;
+            if (player != null) {
+                MediaPlayer old = player;
+                player = null;
+                old.stop();
+                old.dispose();
+            }
+            if (current.track() != null) publish(id, new PlaybackState(current.track(),
+                PlaybackState.Status.STOPPED, 0, current.durationSeconds(), null));
         });
     }
 
+    @Override public void resume() {
+        PlaybackState current = state;
+        if ((current.status() == PlaybackState.Status.STOPPED || current.status() == PlaybackState.Status.ENDED)
+            && current.track() != null) {
+            play(current.track(), 0);
+            return;
+        }
+        transport(id -> { if (player != null) player.play(); });
+    }
+
     @Override public void seek(double fraction) {
-        onAudioThread(() -> {
-            if (player != null && state.durationSeconds() > 0) {
-                player.seek(Duration.seconds(state.durationSeconds() * Math.max(0, Math.min(1, fraction))));
+        if (!Double.isFinite(fraction)) return;
+        transport(id -> {
+            PlaybackState current = state;
+            if (player != null && current.seekable()) {
+                double length = current.durationSeconds();
+                double target = Math.min(Math.max(0, length - 0.001), length * Math.max(0, Math.min(1, fraction)));
+                player.seek(Duration.seconds(target));
             }
         });
     }
@@ -126,22 +161,29 @@ public final class JavaFxPlayerService implements PlayerService {
         onAudioThread(() -> { if (player != null) player.setVolume(this.volume); });
     }
 
-    private void onAudioThread(Runnable action) {
-        ready.thenRun(() -> {
-            if (!closed) Platform.runLater(action);
-        }).exceptionally(error -> {
-            fail(state.track(), "Audio system unavailable: " + message(error));
-            return null;
+    private void transport(LongConsumer action) {
+        long id = request;
+        onAudioThread(() -> { if (id == request) action.accept(id); });
+    }
+
+    private synchronized CompletableFuture<Void> onAudioThread(Runnable action) {
+        // CompletableFuture dependents alone do not preserve submission order during startup.
+        queued = queued.thenRun(() -> {
+            if (!closed) Platform.runLater(() -> { if (!closed) action.run(); });
         });
+        return queued;
     }
 
-    private void publish(PlaybackState next) {
+    private synchronized void publish(long id, PlaybackState next) {
+        if (closed || id != request || next.equals(state)) return;
+        if (next.status() != state.status())
+            LOG.log(System.Logger.Level.DEBUG, "JavaFX transport: {0}", next.status());
         state = next;
-        SwingUtilities.invokeLater(() -> listener.accept(next));
+        SwingUtilities.invokeLater(() -> { if (!closed && id == request) listener.accept(next); });
     }
 
-    private void fail(Track track, String reason) {
-        publish(new PlaybackState(track, PlaybackState.Status.ERROR, 0, 0, reason));
+    private void fail(long id, Track track, String reason) {
+        publish(id, new PlaybackState(track, PlaybackState.Status.ERROR, 0, 0, reason));
     }
 
     private String message(Throwable error) {

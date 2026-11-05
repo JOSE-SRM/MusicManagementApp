@@ -67,6 +67,9 @@ public final class DashboardPanel extends JPanel {
     }
 
     public void setPlaylists(List<Playlist> playlists) { queue.setPlaylists(playlists); }
+    public void setQueue(List<SessionPlanner.Choice> choices) {
+        queue.setPlan(new SessionPlanner.Plan(choices, 0, 0));
+    }
     public void selectPlaylist(String name) { queue.selectPlaylist(name); }
     public List<SessionPlanner.Choice> currentQueue() { return queue.currentChoices(); }
     public void focusPlaylists() {

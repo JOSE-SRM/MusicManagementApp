@@ -2,6 +2,8 @@ package sangitam.desktop.discovery;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import sangitam.desktop.storage.ProviderCredentials;
+import sangitam.desktop.storage.AppPreferences;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -13,8 +15,9 @@ public final class AppleMusicProvider implements MusicProvider {
     private final String storefront;
 
     public AppleMusicProvider() {
-        this(System.getenv("SANGITAM_APPLE_MUSIC_DEVELOPER_TOKEN"),
-            System.getenv("SANGITAM_APPLE_MUSIC_STOREFRONT"));
+        this(ProviderCredentials.get(ProviderCredentials.APPLE_TOKEN, "SANGITAM_APPLE_MUSIC_DEVELOPER_TOKEN"),
+            System.getenv("SANGITAM_APPLE_MUSIC_STOREFRONT") == null
+                ? AppPreferences.appleStorefront() : System.getenv("SANGITAM_APPLE_MUSIC_STOREFRONT"));
     }
     AppleMusicProvider(String token, String storefront) {
         this.token = token;
@@ -25,7 +28,7 @@ public final class AppleMusicProvider implements MusicProvider {
     @Override public String name() { return "Apple Music"; }
     @Override public String setupHint() {
         return available() ? "Catalog search · opens songs in Apple Music"
-            : "Set SANGITAM_APPLE_MUSIC_DEVELOPER_TOKEN, then restart Sangitam";
+            : "Add an Apple Music developer token in Settings to search the catalog.";
     }
     @Override public boolean available() { return token != null && !token.isBlank(); }
 

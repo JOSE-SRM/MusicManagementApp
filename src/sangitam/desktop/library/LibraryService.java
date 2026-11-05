@@ -1,9 +1,12 @@
 package sangitam.desktop.library;
 
+import sangitam.desktop.model.FileStamp;
+import sangitam.desktop.model.LibrarySource;
 import sangitam.desktop.model.Track;
 import sangitam.desktop.model.TrackTags;
 import sangitam.desktop.storage.LibraryStore;
 
+import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -20,24 +23,29 @@ import java.util.function.Consumer;
 /** Keeps file decoding and SQLite work off Swing, then publishes immutable catalog snapshots on its event thread. */
 public final class LibraryService {
     public record ImportSummary(int added, int indexed, int skipped, int unanalyzed,
-                                List<String> errors, boolean cancelled) { }
+                                List<String> errors, boolean cancelled, int reused, int unavailable, List<Path> paths) { }
     public record Catalog(List<Track> tracks, Map<Path, TrackTags> tags, Map<Path, Integer> playCounts,
-                          Set<Path> manualTags) {
+                          Set<Path> manualTags, Set<Path> unavailable, Map<Path, Long> recent, Set<Path> labelRepairs) {
         public Catalog {
             tracks = List.copyOf(tracks);
             tags = Map.copyOf(tags);
             playCounts = Map.copyOf(playCounts);
             manualTags = Set.copyOf(manualTags);
+            unavailable = Set.copyOf(unavailable);
+            recent = Map.copyOf(recent);
+            labelRepairs = Set.copyOf(labelRepairs);
         }
         public Catalog(List<Track> tracks, Map<Path, TrackTags> tags, Map<Path, Integer> playCounts) {
-            this(tracks, tags, playCounts, Set.of());
+            this(tracks, tags, playCounts, Set.of(), Set.of(), Map.of(), Set.of());
         }
         public TrackTags tagsFor(Track track) { return tags.getOrDefault(track.path(), TrackTags.pending()); }
         public int playsFor(Track track) { return playCounts.getOrDefault(track.path(), 0); }
     }
     private record Snapshot(Catalog catalog, long revision) { }
+    private enum ScanMode { IMPORT, RESCAN, REPAIR_LABELS }
 
     private final LibraryStore store;
+    private final Object scanLock = new Object();
     private final LibraryScanner scanner = new LibraryScanner();
     private final AudioAnalyzer analyzer = new AudioAnalyzer();
     private final List<Consumer<List<Track>>> trackListeners = new ArrayList<>();
@@ -76,12 +84,25 @@ public final class LibraryService {
                     Snapshot loaded = get();
                     publishSnapshot(loaded);
                     if (!catalog.tracks().isEmpty()) report.accept("Loaded " + catalog.tracks().size() + " saved tracks");
+                    repairLabels(report);
                     analyzeMissing(report);
                 } catch (Exception error) {
                     report.accept("Library could not be loaded: " + cause(error).getMessage());
                 }
             }
         }.execute();
+    }
+
+    private void repairLabels(Consumer<String> report) {
+        List<LibrarySource> repairs = catalog.labelRepairs().stream()
+            .filter(path -> !catalog.unavailable().contains(path))
+            .map(path -> new LibrarySource(path, false))
+            .toList();
+        if (repairs.isEmpty()) return;
+        scanMedia(repairs, ScanMode.REPAIR_LABELS, ignored -> { }, result -> {
+            int repaired = result.indexed() - result.reused();
+            if (repaired > 0) report.accept("Refreshed labels for " + repaired + " tracks");
+        }, report);
     }
 
     /** Reanalyzes older libraries in the background after their tracks are already visible. */
@@ -91,6 +112,7 @@ public final class LibraryService {
             private List<Track> missing = List.of();
             @Override protected Snapshot doInBackground() throws Exception {
                 missing = input.tracks().stream().filter(track -> !input.manualTags().contains(track.path()))
+                    .filter(track -> !input.unavailable().contains(track.path()))
                     .filter(track -> Files.isRegularFile(track.path()))
                     .filter(track -> !fresh(input.tagsFor(track), track.path())).toList();
                 if (missing.isEmpty()) return null;
@@ -120,40 +142,85 @@ public final class LibraryService {
     public SwingWorker<ImportSummary, LibraryScanner.Progress> importMedia(
         List<Path> sources, boolean recursive, Consumer<LibraryScanner.Progress> onProgress,
         Consumer<ImportSummary> onDone, Consumer<String> onError) {
+        List<LibrarySource> requested = sources.stream().map(path -> new LibrarySource(path, recursive)).toList();
+        return scanMedia(requested, ScanMode.IMPORT, onProgress, onDone, onError);
+    }
+
+    public SwingWorker<ImportSummary, LibraryScanner.Progress> rescan(
+        Consumer<LibraryScanner.Progress> onProgress, Consumer<ImportSummary> onDone, Consumer<String> onError) {
+        return scanMedia(List.of(), ScanMode.RESCAN, onProgress, onDone, onError);
+    }
+
+    private SwingWorker<ImportSummary, LibraryScanner.Progress> scanMedia(
+        List<LibrarySource> requested, ScanMode mode, Consumer<LibraryScanner.Progress> onProgress,
+        Consumer<ImportSummary> onDone, Consumer<String> onError) {
         SwingWorker<ImportSummary, LibraryScanner.Progress> worker = new SwingWorker<>() {
             private Snapshot saved;
 
             @Override protected ImportSummary doInBackground() throws Exception {
-                LibraryScanner.Result result = scanner.scan(sources, recursive, this::publish, this::isCancelled);
-                if (isCancelled()) return new ImportSummary(0, 0, result.skipped(), 0, result.errors(), true);
-                int added;
-                Map<Path, TrackTags> existingTags;
-                Set<Path> beforeManualTags;
+                synchronized (scanLock) {
+                    if (isCancelled()) return cancelledSummary();
+                    return scan();
+                }
+            }
+
+            private ImportSummary scan() throws Exception {
+                Map<Path, LibraryStore.CatalogEntry> existing = new HashMap<>();
+                List<LibrarySource> sources;
+                List<Path> exclusions;
                 synchronized (store) {
                     store.initialize();
-                    Catalog before = readCatalog();
-                    Set<Path> existing = new HashSet<>();
-                    before.tracks().forEach(track -> existing.add(track.path()));
-                    added = (int) result.tracks().stream().filter(track -> !existing.contains(track.path())).count();
-                    store.saveAll(result.tracks());
-                    existingTags = before.tags();
-                    beforeManualTags = before.manualTags();
+                    for (LibraryStore.CatalogEntry entry : store.loadCatalog()) existing.put(entry.track().path(), entry);
+                    sources = mode == ScanMode.RESCAN ? store.loadSources() : requested;
+                    exclusions = store.loadExclusions();
                 }
+                Map<Path, LibraryScanner.KnownTrack> known = new HashMap<>();
+                existing.forEach((path, entry) -> known.put(path, new LibraryScanner.KnownTrack(entry.track(),
+                    entry.stamp(), needsLabelRepair(entry))));
+                LibraryScanner.Result result = scanner.scan(sources, known, mode == ScanMode.RESCAN,
+                    path -> mode != ScanMode.RESCAN || exclusions.stream().noneMatch(path::startsWith), update -> {
+                    if (update.visited() % 32 == 1) publish(update);
+                }, this::isCancelled);
+                if (isCancelled()) return cancelledSummary();
+
+                List<Track> changed = new ArrayList<>();
+                Map<Path, TrackTags> measured = new HashMap<>();
+                int added = 0;
                 int unanalyzed = 0;
                 for (int i = 0; i < result.tracks().size(); i++) {
-                    if (isCancelled()) break;
+                    if (isCancelled()) return cancelledSummary();
                     Track track = result.tracks().get(i);
-                    TrackTags tags = existingTags.getOrDefault(track.path(), TrackTags.pending());
-                    if (!beforeManualTags.contains(track.path()) && !fresh(tags, track.path())) {
+                    FileStamp stamp = result.stamps().get(track.path());
+                    LibraryStore.CatalogEntry before = existing.get(track.path());
+                    if (before == null) added++;
+                    if (before == null || !stamp.equals(before.stamp()) || !track.equals(before.track())) changed.add(track);
+                    TrackTags tags = before == null ? TrackTags.pending() : before.tags();
+                    if ((before == null || !before.manualTags()) && !tags.matches(stamp.size(), stamp.modifiedMillis())) {
                         tags = analyzer.analyze(track.path(), track.durationSeconds());
-                        synchronized (store) { store.saveTags(track.path(), tags); }
+                        if (tags.matches(stamp.size(), stamp.modifiedMillis())) measured.put(track.path(), tags);
                     }
                     if (!tags.analyzed()) unanalyzed++;
-                    publish(new LibraryScanner.Progress(i + 1, result.tracks().size(), track.path(), "Analyzing"));
+                    if (i % 16 == 0) publish(new LibraryScanner.Progress(i + 1,
+                        result.tracks().size(), track.path(), "Checking analysis"));
                 }
-                synchronized (store) { saved = changedSnapshot(); }
+                synchronized (store) {
+                    if (isCancelled()) return cancelledSummary();
+                    List<Path> restored = mode == ScanMode.IMPORT ? exclusions.stream().filter(excluded ->
+                        result.sources().stream().anyMatch(source -> source.path().startsWith(excluded)
+                            || (source.recursive() && excluded.startsWith(source.path())))
+                        || result.stamps().containsKey(excluded)).toList() : List.of();
+                    store.saveScan(changed, result.stamps(), result.unavailable(),
+                        mode == ScanMode.IMPORT ? result.sources() : List.of(), measured, restored);
+                    saved = changedSnapshot();
+                }
+                SwingUtilities.invokeLater(() -> publishSnapshot(saved));
                 return new ImportSummary(added, result.tracks().size(), result.skipped(), unanalyzed,
-                    result.errors(), false);
+                    result.errors(), false, result.reused(), saved.catalog().unavailable().size(),
+                    result.tracks().stream().map(Track::path).toList());
+            }
+
+            private ImportSummary cancelledSummary() {
+                return new ImportSummary(0, 0, 0, 0, List.of(), true, 0, 0, List.of());
             }
 
             @Override protected void process(List<LibraryScanner.Progress> updates) {
@@ -162,7 +229,7 @@ public final class LibraryService {
 
             @Override protected void done() {
                 if (isCancelled()) {
-                    onDone.accept(new ImportSummary(0, 0, 0, 0, List.of(), true));
+                    onDone.accept(cancelledSummary());
                     return;
                 }
                 try {
@@ -170,12 +237,54 @@ public final class LibraryService {
                     publishSnapshot(saved);
                     onDone.accept(summary);
                 } catch (Exception error) {
-                    onError.accept("Import failed: " + cause(error).getMessage());
+                    String action = switch (mode) {
+                        case IMPORT -> "Import";
+                        case RESCAN -> "Rescan";
+                        case REPAIR_LABELS -> "Track label refresh";
+                    };
+                    onError.accept(action + " failed: " + cause(error).getMessage());
                 }
             }
         };
         worker.execute();
         return worker;
+    }
+
+    public void editDetails(List<Path> paths, LibraryStore.DetailChanges changes, Consumer<String> report) {
+        changeCatalog(() -> store.updateDetails(paths, changes), "Track details saved", report);
+    }
+
+    public void removeFromLibrary(List<Path> paths, Path scope, Consumer<String> report) {
+        changeCatalog(() -> {
+            List<Path> removed = scope == null ? paths : store.loadAll().stream().map(Track::path)
+                .filter(path -> path.startsWith(scope)).toList();
+            store.removeFromLibrary(removed, scope);
+        }, "Removed from library", report);
+    }
+
+    @FunctionalInterface
+    private interface CatalogEdit { void run() throws Exception; }
+
+    private void changeCatalog(CatalogEdit edit, String message, Consumer<String> report) {
+        new SwingWorker<Snapshot, Void>() {
+            @Override protected Snapshot doInBackground() throws Exception {
+                synchronized (scanLock) {
+                    synchronized (store) {
+                        edit.run();
+                        return changedSnapshot();
+                    }
+                }
+            }
+
+            @Override protected void done() {
+                try {
+                    publishSnapshot(get());
+                    report.accept(message);
+                } catch (Exception error) {
+                    report.accept("Library change failed: " + cause(error).getMessage());
+                }
+            }
+        }.execute();
     }
 
     /** A successful play is counted once by MainFrame, never on the Swing thread. */
@@ -223,13 +332,23 @@ public final class LibraryService {
         Map<Path, TrackTags> tags = new HashMap<>();
         Map<Path, Integer> plays = new HashMap<>();
         Set<Path> manual = new HashSet<>();
+        Set<Path> unavailable = new HashSet<>();
+        Map<Path, Long> recent = new HashMap<>();
+        Set<Path> labelRepairs = new HashSet<>();
         for (LibraryStore.CatalogEntry entry : store.loadCatalog()) {
             tracks.add(entry.track());
             tags.put(entry.track().path(), entry.tags());
             plays.put(entry.track().path(), entry.playCount());
             if (entry.manualTags()) manual.add(entry.track().path());
+            if (entry.unavailable()) unavailable.add(entry.track().path());
+            recent.put(entry.track().path(), entry.recentAt());
+            if (needsLabelRepair(entry)) labelRepairs.add(entry.track().path());
         }
-        return new Catalog(tracks, tags, plays, manual);
+        return new Catalog(tracks, tags, plays, manual, unavailable, recent, labelRepairs);
+    }
+
+    private boolean needsLabelRepair(LibraryStore.CatalogEntry entry) {
+        return LibraryScanner.needsLabelRepair(entry.track(), entry.titleOverride(), entry.artistOverride());
     }
 
     private Snapshot changedSnapshot() throws Exception {
@@ -237,7 +356,7 @@ public final class LibraryService {
     }
 
     private void publishSnapshot(Snapshot snapshot) {
-        if (snapshot.revision() < publishedRevision) return;
+        if (snapshot.revision() <= publishedRevision) return;
         publishedRevision = snapshot.revision();
         catalog = snapshot.catalog();
         for (Consumer<List<Track>> listener : trackListeners) listener.accept(catalog.tracks());

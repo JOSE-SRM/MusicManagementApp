@@ -2,6 +2,7 @@ package sangitam.desktop.ui;
 
 import sangitam.desktop.history.Favorite;
 import sangitam.desktop.history.FavoritesAnalyzer;
+import sangitam.desktop.storage.ProviderCredentials;
 import sangitam.desktop.history.HistoryService;
 import sangitam.desktop.history.HistorySource;
 import sangitam.desktop.history.LastFmHistorySource;
@@ -130,17 +131,17 @@ public final class RediscoverPanel extends JPanel {
 
         SpotifyHistorySource spotify = new SpotifyHistorySource();
         String spotifyText = spotify.available() ? "Spotify token ready (recent plays permission required)"
-            : "Spotify: set SANGITAM_SPOTIFY_ACCESS_TOKEN";
+            : "Spotify: add a token in Settings";
         JPanel hints = new JPanel();
         hints.setOpaque(false);
         hints.setLayout(new BoxLayout(hints, BoxLayout.Y_AXIS));
         JLabel spotifyHint = UiFactory.label(spotifyText, Theme.SMALL, Theme.TEXT_MUTED);
         spotifyHint.setAlignmentX(Component.LEFT_ALIGNMENT);
         hints.add(spotifyHint);
-        boolean lastFmKey = System.getenv("SANGITAM_LASTFM_API_KEY") != null
-            && !System.getenv("SANGITAM_LASTFM_API_KEY").isBlank();
+        String lastFmCredential = ProviderCredentials.get(ProviderCredentials.LASTFM_KEY, "SANGITAM_LASTFM_API_KEY");
+        boolean lastFmKey = lastFmCredential != null && !lastFmCredential.isBlank();
         JLabel lastFmHint = UiFactory.label(lastFmKey ? "Last.fm API key ready"
-            : "Last.fm: set SANGITAM_LASTFM_API_KEY", Theme.SMALL, Theme.TEXT_MUTED);
+            : "Last.fm: add an API key in Settings", Theme.SMALL, Theme.TEXT_MUTED);
         lastFmHint.setAlignmentX(Component.LEFT_ALIGNMENT);
         hints.add(Box.createVerticalStrut(3));
         hints.add(lastFmHint);
@@ -179,7 +180,7 @@ public final class RediscoverPanel extends JPanel {
         List<HistorySource> sources = List.of(new SpotifyHistorySource(),
             new ListenBrainzHistorySource(lb), new LastFmHistorySource(lf));
         if (sources.stream().noneMatch(HistorySource::available)) {
-            status.setText("Add a username or Spotify token first. Last.fm also needs SANGITAM_LASTFM_API_KEY.");
+            status.setText("Add a username or configure provider tokens in Settings first.");
             return;
         }
         status.setText("Syncing available sources in the background…");
@@ -252,11 +253,8 @@ public final class RediscoverPanel extends JPanel {
 
     private void exportCollection() {
         if (favorites.isEmpty()) { status.setText("Nothing to export yet."); return; }
-        JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("Choose a folder for Sangitam Favorites.csv");
-        chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
-        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
-        Path folder = chooser.getSelectedFile().toPath();
+        Path folder = FileBrowserDialog.chooseDirectory(SwingUtilities.getWindowAncestor(this), "Choose export folder");
+        if (folder == null) return;
         List<Favorite> snapshot = favorites;
         status.setText("Exporting collection…");
         new SwingWorker<Path, Void>() {

@@ -1,5 +1,7 @@
 package sangitam.desktop.history;
 
+import sangitam.desktop.storage.ProviderCredentials;
+
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -12,14 +14,14 @@ import java.util.List;
 public final class SpotifyHistorySource implements HistorySource {
     private final String token;
 
-    public SpotifyHistorySource() { this(System.getenv("SANGITAM_SPOTIFY_ACCESS_TOKEN")); }
+    public SpotifyHistorySource() { this(ProviderCredentials.get(ProviderCredentials.SPOTIFY_TOKEN, "SANGITAM_SPOTIFY_ACCESS_TOKEN")); }
     SpotifyHistorySource(String token) { this.token = token; }
 
     @Override public String name() { return "Spotify"; }
     @Override public boolean available() { return token != null && !token.isBlank(); }
     @Override public String setupHint() {
         return available() ? "Connected by access token; requires user-read-recently-played."
-            : "Set SANGITAM_SPOTIFY_ACCESS_TOKEN with user-read-recently-played permission.";
+            : "Add a Spotify token in Settings with user-read-recently-played permission.";
     }
 
     @Override public List<ListenEvent> recent() throws Exception {

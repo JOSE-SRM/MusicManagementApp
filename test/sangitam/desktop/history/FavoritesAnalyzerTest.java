@@ -26,7 +26,7 @@ class FavoritesAnalyzerTest {
         Favorite favorite = FavoritesAnalyzer.analyze(List.of(local), Map.of(path, 3), events).get(0);
         // Two real local listens, two matching external reports, and one legacy count.
         assertEquals(3, favorite.knownPlays());
-        assertEquals(path, favorite.localPath());
+        assertEquals(local.path(), favorite.localPath());
         assertEquals(1, FavoritesAnalyzer.forgotten(List.of(favorite), now).size());
         assertTrue(favorite.sources().containsAll(List.of("Sangitam", "Spotify", "ListenBrainz")));
     }

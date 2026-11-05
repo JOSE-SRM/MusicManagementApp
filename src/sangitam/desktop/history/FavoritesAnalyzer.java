@@ -25,6 +25,8 @@ public final class FavoritesAnalyzer {
         Map<String, Group> groups = new HashMap<>();
         Map<Path, Group> localGroups = new HashMap<>();
         Map<Path, Integer> recordedLocal = new HashMap<>();
+        Map<Path, Integer> normalizedLocalCounts = new HashMap<>();
+        localCounts.forEach((path, count) -> normalizedLocalCounts.merge(normalizePath(path), count, Integer::sum));
         for (Track track : tracks) {
             Group group = groups.computeIfAbsent(key(track.title(), track.artist()), ignored -> new Group());
             group.title = track.title();
@@ -34,8 +36,9 @@ public final class FavoritesAnalyzer {
             localGroups.put(track.path(), group);
         }
         for (ListenEvent event : events) {
-            if (event.localPath() != null) recordedLocal.merge(event.localPath(), 1, Integer::sum);
-            Group group = event.localPath() == null ? null : localGroups.get(event.localPath());
+            Path localPath = event.localPath() == null ? null : normalizePath(event.localPath());
+            if (localPath != null) recordedLocal.merge(localPath, 1, Integer::sum);
+            Group group = localPath == null ? null : localGroups.get(localPath);
             if (group == null)
                 group = groups.computeIfAbsent(key(event.title(), event.artist()), ignored -> new Group());
             if (group.title == null) {
@@ -48,10 +51,10 @@ public final class FavoritesAnalyzer {
             if (event.link() != null && (group.link == null
                 || ("listenbrainz.org".equalsIgnoreCase(group.link.getHost())
                     && !"ListenBrainz".equals(event.source())))) group.link = event.link();
-            if (group.localPath == null && event.localPath() != null) group.localPath = event.localPath();
+            if (group.localPath == null && localPath != null) group.localPath = localPath;
         }
         for (Track track : tracks) {
-            int legacy = Math.max(0, localCounts.getOrDefault(track.path(), 0)
+            int legacy = Math.max(0, normalizedLocalCounts.getOrDefault(track.path(), 0)
                 - recordedLocal.getOrDefault(track.path(), 0));
             if (legacy > 0) {
                 Group group = groups.get(key(track.title(), track.artist()));
@@ -103,6 +106,10 @@ public final class FavoritesAnalyzer {
         String plain = Normalizer.normalize(text, Normalizer.Form.NFKD)
             .replaceAll("\\p{M}+", "").toLowerCase(Locale.ROOT);
         return plain.replaceAll("[^\\p{L}\\p{N}]+", " ").trim().replaceAll(" +", " ");
+    }
+
+    private static Path normalizePath(Path path) {
+        return path.toAbsolutePath().normalize();
     }
 
     private static final class Group {

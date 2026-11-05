@@ -2,6 +2,7 @@ package sangitam.desktop.app;
 
 import sangitam.desktop.ui.MainFrame;
 import sangitam.desktop.ui.Theme;
+import sangitam.desktop.storage.ProviderCredentials;
 
 import javax.swing.SwingUtilities;
 
@@ -14,6 +15,7 @@ public final class SangitamApp {
     }
 
     public static void main(String[] args) {
+        ProviderCredentials.preload(null);
         SwingUtilities.invokeLater(() -> {
             Theme.install();
             MainFrame frame = new MainFrame();

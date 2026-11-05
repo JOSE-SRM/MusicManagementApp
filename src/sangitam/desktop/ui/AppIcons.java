@@ -8,13 +8,14 @@ import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.geom.Path2D;
+import java.awt.image.BufferedImage;
 
 /**
  * Small vector icons used throughout the interface.
  * IMPORTANT: Icons are painted in Java, so they remain sharp and never depend on missing image files.
  */
 public final class AppIcons {
-    public enum Kind { HOME, SEARCH, MUSIC, FOLDER, PLAY, PAUSE, PREVIOUS, NEXT, PLUS, EXPAND, COLLAPSE, SETTINGS, HELP }
+    public enum Kind { HOME, SEARCH, MUSIC, FOLDER, PLAY, PAUSE, PREVIOUS, NEXT, PLUS, EXPAND, COLLAPSE, SETTINGS, HELP, SHUFFLE, REPEAT, STOP }
 
     private AppIcons() {
     }
@@ -25,6 +26,16 @@ public final class AppIcons {
 
     public static Icon of(Kind kind, int size, Color color) {
         return new VectorIcon(kind, size, color);
+    }
+
+    public static BufferedImage image(Kind kind, int size, Color color, Color background) {
+        BufferedImage image = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D graphics = image.createGraphics();
+        graphics.setColor(background);
+        graphics.fillRoundRect(0, 0, size, size, size / 3, size / 3);
+        of(kind, size * 3 / 4, color).paintIcon(null, graphics, size / 8, size / 8);
+        graphics.dispose();
+        return image;
     }
 
     private static final class VectorIcon implements Icon {
@@ -88,6 +99,22 @@ public final class AppIcons {
                     g.drawOval(p, p, size - p * 2, size - p * 2); g.drawOval(m - 2, m - 2, 4, 4); break;
                 case HELP:
                     g.drawOval(p, p, size - p * 2, size - p * 2); g.drawString("?", m - 3, size - p - 1); break;
+                case SHUFFLE:
+                    g.drawLine(p, p + 2, size - p, size - p - 2);
+                    g.drawLine(p, size - p - 2, size - p, p + 2);
+                    g.drawLine(size - p - 4, p + 2, size - p, p + 2);
+                    g.drawLine(size - p, p + 2, size - p, p + 6);
+                    g.drawLine(size - p - 4, size - p - 2, size - p, size - p - 2);
+                    g.drawLine(size - p, size - p - 2, size - p, size - p - 6); break;
+                case REPEAT:
+                    g.drawArc(p, p + 2, size - 2 * p, size - 2 * p, 35, 225);
+                    g.drawArc(p, p + 2, size - 2 * p, size - 2 * p, 215, 225);
+                    g.drawLine(size - p - 2, p + 2, size - p, p + 6);
+                    g.drawLine(size - p - 2, p + 2, size - p - 6, p + 3);
+                    g.drawLine(p + 2, size - p - 2, p, size - p - 6);
+                    g.drawLine(p + 2, size - p - 2, p + 6, size - p - 3); break;
+                case STOP:
+                    g.fillRoundRect(p + 1, p + 1, size - 2 * p - 2, size - 2 * p - 2, 2, 2); break;
                 default: break;
             }
             g.dispose();
