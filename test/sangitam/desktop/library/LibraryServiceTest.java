@@ -207,6 +207,27 @@ class LibraryServiceTest {
         assertEquals(2, scan(service, List.of(), true).reused());
     }
 
+    @Test void startupUpgradesLegacyMetadataWithoutOverwritingATitleCorrection() throws Exception {
+        Path file = folder.resolve("legacy.mp3");
+        try (var source = getClass().getResourceAsStream("/audio/proof.mp3")) { Files.copy(source, file); }
+        var store = new LibraryStore(folder.resolve("data/library.db")); store.initialize();
+        store.saveAll(List.of(new Track(file, "Old title", "Artist", "Album", 1, "MP3")));
+        store.updateDetails(List.of(file), new LibraryStore.DetailChanges("My title", null, null, null, null, null));
+        var service = new LibraryService(store);
+        var refreshed = new CompletableFuture<LibraryService.Catalog>();
+        SwingUtilities.invokeAndWait(() -> {
+            service.addCatalogListener(catalog -> {
+                if (!catalog.tracks().isEmpty() && catalog.tracks().getFirst().metadata().extractionVersion() == 1) refreshed.complete(catalog);
+            });
+            service.loadInitial(message -> { if (message.contains("could not") || message.contains("failed")) refreshed.completeExceptionally(new AssertionError(message)); });
+        });
+        var saved = refreshed.get(10, TimeUnit.SECONDS).tracks().getFirst();
+        assertEquals("My title", saved.title());
+        assertTrue(saved.metadata().sampleRateHz() > 0);
+        assertTrue(store.loadSources().isEmpty());
+        assertEquals(1, store.loadAll().size());
+    }
+
     private LibraryService.ImportSummary scan(LibraryService service, List<Path> sources, boolean recursive) throws Exception {
         CompletableFuture<LibraryService.ImportSummary> result = new CompletableFuture<>();
         var error = (java.util.function.Consumer<String>) message -> result.completeExceptionally(new AssertionError(message));
@@ -215,6 +236,28 @@ class LibraryServiceTest {
             else service.importMedia(sources, recursive, ignored -> { }, result::complete, error);
         });
         return result.get(10, TimeUnit.SECONDS);
+    }
+
+    @Test void restoringFileDetailsRereadsUnchangedFilesAndLeavesUnreadableCorrectionsProtected() throws Exception {
+        Path valid = writeWav(folder.resolve("File title.wav"), 1), missing = writeWav(folder.resolve("Missing.wav"), 1);
+        Path corrupt = writeWav(folder.resolve("Corrupt.wav"), 1);
+        var store = new LibraryStore(folder.resolve("data/library.db")); var service = new LibraryService(store);
+        scan(service, List.of(valid, missing, corrupt), false);
+        store.updateDetails(List.of(valid, missing, corrupt), new LibraryStore.DetailChanges("Correction", "Keep artist", null, null, null, null));
+        Files.delete(missing); Files.writeString(corrupt, "not an audio file");
+        var done = new CompletableFuture<String>();
+        var reset = new sangitam.desktop.model.DetailReset(Set.of(sangitam.desktop.model.DetailReset.Basic.TITLE), Set.of(), false);
+        SwingUtilities.invokeAndWait(() -> service.restoreDetails(List.of(valid, missing, corrupt, folder.resolve("not-indexed.wav")), reset, message -> {
+            assertTrue(SwingUtilities.isEventDispatchThread()); done.complete(message);
+        }));
+        String report = done.get(10, TimeUnit.SECONDS);
+        assertTrue(report.startsWith("Restored file details for 1 tracks"), report); assertTrue(report.contains("3 unchanged"));
+        Track restored = service.snapshot().stream().filter(track -> track.path().equals(valid)).findFirst().orElseThrow();
+        assertEquals("File title", restored.title()); assertEquals("Keep artist", restored.artist());
+        assertTrue(service.snapshot().stream().filter(track -> !track.path().equals(valid)).allMatch(track -> track.title().equals("Correction")));
+        scan(service, List.of(), true);
+        assertEquals("File title", store.loadAll().stream().filter(track -> track.path().equals(valid)).findFirst().orElseThrow().title());
+        assertEquals(3, store.loadAll().size()); assertEquals(3, store.loadSources().size());
     }
 
     private Path writeWav(Path path, int seconds) throws Exception {

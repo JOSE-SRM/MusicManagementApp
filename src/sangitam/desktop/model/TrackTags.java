@@ -1,13 +1,16 @@
 package sangitam.desktop.model;
 
 /** Measured audio traits. These are estimates, not inferred emotions or musical genres. */
-public record TrackTags(int energy, int activity, boolean analyzed, long fileSize, long modifiedMillis) {
+public record TrackTags(int energy, int activity, boolean analyzed, long fileSize, long modifiedMillis, AudioFeatures features) {
     public TrackTags {
         energy = Math.max(0, Math.min(100, energy));
         activity = Math.max(0, Math.min(100, activity));
+        features = features == null ? AudioFeatures.empty() : features;
     }
+    public TrackTags(int energy,int activity,boolean analyzed,long size,long modified){this(energy,activity,analyzed,size,modified,AudioFeatures.empty());}
 
-    public static TrackTags pending() { return new TrackTags(50, 50, false, -1, -1); }
+    private static final TrackTags PENDING = new TrackTags(50, 50, false, -1, -1);
+    public static TrackTags pending() { return PENDING; }
 
     public boolean matches(long size, long modified) {
         return fileSize >= 0 && fileSize == size && modifiedMillis == modified;

@@ -4,6 +4,7 @@ import sangitam.desktop.model.LibraryCollections;
 import sangitam.desktop.model.LibraryCollections.Folder;
 import sangitam.desktop.model.LibraryCollections.Key;
 import sangitam.desktop.model.LibraryCollections.Kind;
+import sangitam.desktop.model.SmartPlaylistRule;
 
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -174,7 +175,34 @@ public final class CollectionStore {
         transact(connection -> append(connection, id, tracks));
     }
 
+    public void createSmartPlaylist(String name, String description, long folder, SmartPlaylistRule rule) throws SQLException {
+        if (name == null || name.isBlank()) throw new IllegalArgumentException("Give the playlist a name.");
+        java.util.Objects.requireNonNull(rule);
+        transact(connection -> {
+            requireFolder(connection, folder);
+            execute(connection, "INSERT INTO playlists(name,description,folder_id,updated_at) VALUES (?,?,?,?)",
+                name.strip(), description.strip(), folder, now());
+            try (var query = connection.createStatement(); var row = query.executeQuery("SELECT last_insert_rowid()")) {
+                row.next(); SmartPlaylistStore.save(connection, row.getLong(1), rule);
+            }
+        });
+    }
+
+    public void editSmartPlaylist(long id, String name, String description, SmartPlaylistRule rule) throws SQLException {
+        if (name == null || name.isBlank()) throw new IllegalArgumentException("Give the playlist a name.");
+        java.util.Objects.requireNonNull(rule);
+        transact(connection -> {
+            try (var query = connection.prepareStatement("SELECT 1 FROM smart_playlist_rules WHERE playlist_id=?")) {
+                query.setLong(1, id);
+                try (var row = query.executeQuery()) { if (!row.next()) throw new SQLException("This smart playlist no longer exists."); }
+            }
+            execute(connection, "UPDATE playlists SET name=?,description=?,updated_at=? WHERE id=?", name.strip(), description.strip(), now(), id);
+            SmartPlaylistStore.save(connection, id, rule);
+        });
+    }
+
     private void append(Connection connection, long id, List<Path> tracks) throws SQLException {
+        SmartPlaylistStore.requireManual(connection, id);
         int position = 0;
         var existing = new HashSet<String>();
         try (PreparedStatement query = connection.prepareStatement(
@@ -217,6 +245,16 @@ public final class CollectionStore {
     public void setPinned(Key key, boolean pinned) throws SQLException {
         transact(connection -> execute(connection, pinned ? "INSERT OR IGNORE INTO library_pins VALUES (?,?)"
             : "DELETE FROM library_pins WHERE kind=? AND item=?", key.kind().name(), key.id()));
+    }
+
+    public void togglePinned(Key key) throws SQLException {
+        transact(connection -> {
+            try (var remove = connection.prepareStatement("DELETE FROM library_pins WHERE kind=? AND item=?")) {
+                remove.setString(1, key.kind().name());
+                remove.setString(2, key.id());
+                if (remove.executeUpdate() == 0) execute(connection, "INSERT INTO library_pins VALUES (?,?)", key.kind().name(), key.id());
+            }
+        });
     }
 
     private List<Long> branch(Connection connection, long id) throws SQLException {

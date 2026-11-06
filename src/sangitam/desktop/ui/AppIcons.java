@@ -15,7 +15,7 @@ import java.awt.image.BufferedImage;
  * IMPORTANT: Icons are painted in Java, so they remain sharp and never depend on missing image files.
  */
 public final class AppIcons {
-    public enum Kind { HOME, SEARCH, MUSIC, FOLDER, PLAY, PAUSE, PREVIOUS, NEXT, PLUS, EXPAND, COLLAPSE, SETTINGS, HELP, SHUFFLE, REPEAT, STOP }
+    public enum Kind { HOME, SEARCH, MUSIC, FOLDER, PLAY, PAUSE, PREVIOUS, NEXT, PLUS, EXPAND, COLLAPSE, SETTINGS, HELP, SHUFFLE, REPEAT, STOP, QUEUE, VOLUME, EQ, HEART, PIN, SPECTRUM }
 
     private AppIcons() {
     }
@@ -36,6 +36,10 @@ public final class AppIcons {
         of(kind, size * 3 / 4, color).paintIcon(null, graphics, size / 8, size / 8);
         graphics.dispose();
         return image;
+    }
+
+    public static BufferedImage applicationIcon(int size) {
+        return image(Kind.MUSIC, size, Theme.BLUE, Theme.SURFACE);
     }
 
     private static final class VectorIcon implements Icon {
@@ -81,8 +85,28 @@ public final class AppIcons {
                     play.moveTo(p + 2, p); play.lineTo(size - p, m); play.lineTo(p + 2, size - p); play.closePath();
                     g.fill(play); break;
                 case PAUSE:
-                    g.fillRoundRect(p + 2, p, 4, size - p * 2, 2, 2);
-                    g.fillRoundRect(size - p - 6, p, 4, size - p * 2, 2, 2); break;
+                    int bar = Math.max(2, size / 6);
+                    g.fillRoundRect(p, p, bar, size - p * 2, 2, 2);
+                    g.fillRoundRect(size - p - bar, p, bar, size - p * 2, 2, 2); break;
+                case QUEUE:
+                    for (int row = 0; row < 3; row++) g.drawLine(p, p + row * (size - 2 * p) / 2, size - p - 4, p + row * (size - 2 * p) / 2);
+                    triangle(g, size - 5, m, size - 1, m + 3, size - 5, m + 6); break;
+                case EQ:
+                    for (int i = 0; i < 3; i++) { int at = p + i * (size - 2 * p) / 2; int knob = i % 2 == 0 ? m + 2 : m - 3; g.drawLine(p, at, size - p, at); g.setColor(Theme.SURFACE); g.fillOval(knob - 3, at - 3, 6, 6); g.setColor(color); g.drawOval(knob - 3, at - 3, 6, 6); } break;
+                case SPECTRUM:
+                    for (int i = 0; i < 4; i++) { int at = p + i * (size - 2 * p) / 3; int top = p + (i % 2) * size / 5; g.drawLine(at, top, at, size - p); } break;
+                case VOLUME:
+                    Path2D speaker = new Path2D.Double(); speaker.moveTo(p, m - 2); speaker.lineTo(m - 2, m - 2); speaker.lineTo(m + 1, p); speaker.lineTo(m + 1, size - p); speaker.lineTo(m - 2, m + 2); speaker.lineTo(p, m + 2); speaker.closePath(); g.fill(speaker);
+                    g.drawArc(m, p, size / 2 - 1, size - p * 2, -65, 130); break;
+                case HEART:
+                    Path2D heart = new Path2D.Double(); heart.moveTo(m, size - p); heart.curveTo(-2, m, p, 0, m, p + 2); heart.curveTo(size - p, 0, size + 2, m, m, size - p); g.draw(heart); break;
+                case PIN:
+                    int wide = Math.max(2, size / 4);
+                    g.drawLine(m - wide, p, m + wide, p);
+                    g.drawLine(m - wide / 2, p, m - wide, m + 1);
+                    g.drawLine(m + wide / 2, p, m + wide, m + 1);
+                    g.drawLine(m - wide, m + 1, m + wide, m + 1);
+                    g.drawLine(m, m + 1, m, size - p); break;
                 case PREVIOUS:
                     g.fillRect(p, p, 3, size - p * 2); triangle(g, size - p, p, p + 4, m, size - p, size - p); break;
                 case NEXT:

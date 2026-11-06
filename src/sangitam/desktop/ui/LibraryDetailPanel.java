@@ -53,6 +53,7 @@ final class LibraryDetailPanel extends JPanel {
         heading.add(actions);
         add(heading, BorderLayout.NORTH);
         songs.setFixedCellHeight(63);
+        songs.setFixedCellWidth(340);
         songs.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         songs.setCellRenderer(renderer);
         songs.getAccessibleContext().setAccessibleName("Collection songs");
@@ -86,7 +87,7 @@ final class LibraryDetailPanel extends JPanel {
         });
         JScrollPane scroll = new JScrollPane(songs, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
             ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-        scroll.setBorder(BorderFactory.createLineBorder(Theme.DIVIDER));
+        scroll.setBorder(UiFactory.roundedBorder(Theme.DIVIDER, 12));
         add(scroll, BorderLayout.CENTER);
     }
 

@@ -2,6 +2,7 @@ package sangitam.desktop.ui;
 
 import org.jaudiotagger.audio.AudioFileIO;
 import sangitam.desktop.model.Track;
+import sangitam.desktop.model.FileStamp;
 
 import javax.imageio.ImageIO;
 import javax.swing.*;
@@ -11,16 +12,22 @@ import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 
 /** Reads embedded covers on demand. The cache and pending queue have fixed bounds. */
 final class LibraryArtwork {
-    private static final int SIZE = 42;
-    private final LinkedHashMap<Path, Icon> cache = new LinkedHashMap<>(160, 0.75f, true);
-    private final Set<Path> pending = new HashSet<>();
+    private record CoverKey(Path path, FileStamp stamp) { }
+    private static final FileStamp UNKNOWN = new FileStamp(-1, -1);
+    private final int size;
+    private final Function<Path, Icon> reader;
+    private boolean closed;
+    private final LinkedHashMap<CoverKey, Icon> cache = new LinkedHashMap<>(160, 0.75f, true);
+    private final Set<CoverKey> pending = new HashSet<>();
     private final ThreadPoolExecutor worker = new ThreadPoolExecutor(1, 1, 20, TimeUnit.SECONDS,
         new LinkedBlockingQueue<>(24), task -> {
             Thread thread = new Thread(task, "sangitam-cover-art");
@@ -28,30 +35,42 @@ final class LibraryArtwork {
             return thread;
         });
 
-    Icon forEntry(LibraryEntry entry, Set<Path> unavailable, Runnable repaint) {
+    LibraryArtwork() { this(42); }
+    LibraryArtwork(int size) { this(size, null); }
+    LibraryArtwork(int size, Function<Path, Icon> reader) {
+        if (size < 16 || size > 128) throw new IllegalArgumentException("Cover size must be within 16–128 pixels.");
+        this.size = size; this.reader = reader == null ? this::read : reader;
+    }
+
+    Icon forEntry(LibraryEntry entry, Set<Path> unavailable, Map<Path, FileStamp> stamps, Runnable repaint) {
+        if (closed) return null;
         List<Track> tracks = entry.tracks();
         int sample = Math.min(3, tracks.size());
         for (int i = 0; i < sample; i++) {
             Path path = tracks.get(i).path();
             if (unavailable.contains(path)) continue;
-            if (cache.containsKey(path)) {
-                Icon found = cache.get(path);
+            CoverKey key = new CoverKey(path, stamps.getOrDefault(path, UNKNOWN));
+            if (cache.containsKey(key)) {
+                Icon found = cache.get(key);
                 if (found != null) return found;
             } else {
-                request(path, repaint);
+                request(key, repaint);
                 break;
             }
         }
         return null;
     }
 
-    private void request(Path path, Runnable repaint) {
-        if (worker.isShutdown() || pending.size() >= 24 || !pending.add(path)) return;
+    private void request(CoverKey key, Runnable repaint) {
+        if (worker.isShutdown() || pending.size() >= 24 || !pending.add(key)) return;
         worker.execute(() -> {
-            Icon icon = read(path);
+            Icon loaded;
+            try { loaded = reader.apply(key.path()); } catch (RuntimeException error) { loaded = null; }
+            Icon icon = loaded;
             SwingUtilities.invokeLater(() -> {
-                pending.remove(path);
-                cache.put(path, icon);
+                pending.remove(key);
+                if (closed) return;
+                cache.put(key, icon);
                 if (cache.size() > 160) cache.pollFirstEntry();
                 repaint.run();
             });
@@ -74,11 +93,11 @@ final class LibraryArtwork {
                     int width = reader.getWidth(0);
                     int height = reader.getHeight(0);
                     if (width <= 0 || height <= 0 || width > 12000 || height > 12000) return null;
-                    int sample = Math.max(1, Math.max(width, height) / (SIZE * 2));
+                    int sample = Math.max(1, Math.max(width, height) / (size * 2));
                     var params = reader.getDefaultReadParam();
                     params.setSourceSubsampling(sample, sample, 0, 0);
                     var image = reader.read(0, params);
-                    double scale = SIZE / (double) Math.max(image.getWidth(), image.getHeight());
+                    double scale = size / (double) Math.max(image.getWidth(), image.getHeight());
                     return new ImageIcon(image.getScaledInstance(Math.max(1, (int) (image.getWidth() * scale)),
                         Math.max(1, (int) (image.getHeight() * scale)), Image.SCALE_SMOOTH));
                 } finally {
@@ -90,5 +109,5 @@ final class LibraryArtwork {
         }
     }
 
-    void close() { worker.shutdownNow(); }
+    void close() { closed = true; pending.clear(); cache.clear(); worker.shutdownNow(); }
 }

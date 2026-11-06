@@ -3,6 +3,8 @@ package sangitam.desktop.ui;
 import sangitam.desktop.history.Favorite;
 import sangitam.desktop.history.FavoritesAnalyzer;
 import sangitam.desktop.storage.ProviderCredentials;
+import sangitam.desktop.storage.LibraryStore;
+import sangitam.desktop.storage.ListeningInsightsStore;
 import sangitam.desktop.history.HistoryService;
 import sangitam.desktop.history.HistorySource;
 import sangitam.desktop.history.LastFmHistorySource;
@@ -47,16 +49,18 @@ public final class RediscoverPanel extends JPanel {
     private final JTable mostTable = table(mostModel);
     private final JTable forgottenTable = table(forgottenModel);
     private final JTabbedPane tabs = new JTabbedPane();
+    private final ListeningInsightsPanel insights;
     private final JButton playButton = UiFactory.button("Play local file", null, true);
     private final JButton openButton = UiFactory.button("Open source", null, false);
     private List<Favorite> favorites = List.of();
     private List<Track> localTracks = List.of();
 
-    public RediscoverPanel(HistoryService history, Consumer<Track> play, Consumer<String> notify) {
+    public RediscoverPanel(HistoryService history, LibraryStore store, Consumer<Track> play, Consumer<String> notify) {
         super(new BorderLayout(0, 16));
         this.history = history;
         this.play = play;
         this.notify = notify;
+        insights = new ListeningInsightsPanel(new ListeningInsightsStore(store));
         setBackground(Theme.BLACK);
         setBorder(Theme.padding(25, 28, 20, 28));
 
@@ -82,7 +86,7 @@ public final class RediscoverPanel extends JPanel {
 
         tabs.addTab("Most played", new JScrollPane(mostTable));
         tabs.addTab("Forgotten favorites", new JScrollPane(forgottenTable));
-        tabs.addChangeListener(event -> updateActions());
+        tabs.addTab("Listening insights", insights);
         mostTable.getSelectionModel().addListSelectionListener(event -> updateActions());
         forgottenTable.getSelectionModel().addListSelectionListener(event -> updateActions());
         add(tabs, BorderLayout.CENTER);
@@ -98,6 +102,12 @@ public final class RediscoverPanel extends JPanel {
         actions.add(playButton);
         actions.add(openButton);
         actions.add(export);
+        tabs.addChangeListener(event -> {
+            boolean showInsights = tabs.getSelectedComponent() == insights;
+            actions.setVisible(!showInsights);
+            updateActions();
+            if (showInsights) insights.reload();
+        });
         footer.add(actions, BorderLayout.NORTH);
         footer.add(status, BorderLayout.CENTER);
         add(footer, BorderLayout.SOUTH);
@@ -113,6 +123,8 @@ public final class RediscoverPanel extends JPanel {
         localTracks = catalog.tracks();
         history.updateCatalog(catalog);
     }
+
+    void close() { insights.close(); }
 
     private JPanel buildConnections() {
         JPanel card = UiFactory.surface(new BorderLayout(0, 9));
@@ -212,6 +224,7 @@ public final class RediscoverPanel extends JPanel {
     }
 
     private Favorite selected() {
+        if (tabs.getSelectedComponent() == insights) return null;
         JTable table = tabs.getSelectedIndex() == 0 ? mostTable : forgottenTable;
         FavoriteTableModel model = tabs.getSelectedIndex() == 0 ? mostModel : forgottenModel;
         int row = table.getSelectedRow();

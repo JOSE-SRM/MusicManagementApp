@@ -36,18 +36,6 @@ public final class NavigationPanel extends JPanel {
         add(navButton("Your library", AppIcons.Kind.MUSIC, toggleLibrary));
         add(Box.createVerticalStrut(22));
 
-        JLabel collection = UiFactory.label("Your collection", Theme.SMALL, Theme.TEXT_MUTED);
-        collection.setAlignmentX(Component.LEFT_ALIGNMENT);
-        add(collection);
-        add(Box.createVerticalStrut(10));
-        add(navButton("Songs", AppIcons.Kind.MUSIC, () -> navigate.accept("songs")));
-        add(Box.createVerticalStrut(6));
-        add(navButton("Albums", AppIcons.Kind.MUSIC, () -> navigate.accept("albums")));
-        add(Box.createVerticalStrut(6));
-        add(navButton("Artists", AppIcons.Kind.MUSIC, () -> navigate.accept("artists")));
-        add(Box.createVerticalStrut(6));
-        add(navButton("Playlists", AppIcons.Kind.MUSIC, () -> navigate.accept("playlists")));
-
         add(Box.createVerticalGlue());
         String shortcut = System.getProperty("os.name", "").toLowerCase().contains("mac") ? "⌘K" : "Ctrl K";
         JButton quick = navButton("Quick actions  " + shortcut, AppIcons.Kind.SEARCH, quickActions);

@@ -16,6 +16,8 @@ if not exist "src\sangitam\desktop\session\SessionPlanner.java" goto :missingSou
 
 call mvnw.cmd -q -DskipTests clean compile
 if errorlevel 1 goto :error
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0native\build-media-host.ps1"
+if errorlevel 1 echo Windows system media panel unavailable; in-app controls and media-key fallback remain usable.
 echo Build complete. Classes are in bin\sangitam\desktop\
 exit /b 0
 

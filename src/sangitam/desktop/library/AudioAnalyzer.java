@@ -13,7 +13,8 @@ import java.util.List;
 /**
  * Measures loudness and short changes in the audio envelope. For longer songs,
  * it samples the opening and a later passage so a quiet intro does not define
- * the entire track. These are estimates of energy and movement, not genre or mood.
+ * the entire track. Richer measurements use a continuous, bounded decoded passage.
+ * Musical mood labels are heuristics; instrumentation is supplied by metadata.
  */
 public final class AudioAnalyzer {
     public TrackTags analyze(Path file) { return analyze(file, 0); }
@@ -26,6 +27,7 @@ public final class AudioAnalyzer {
             modified = Files.getLastModifiedTime(file).toMillis();
             try (AudioInputStream source = AudioSystem.getAudioInputStream(file.toFile())) {
                 AudioFormat input = source.getFormat();
+                if (input.getChannels()<1 || input.getChannels()>32 || input.getSampleRate()<4000 || input.getSampleRate()>384000) throw new java.io.IOException("Unsupported analysis format");
                 AudioFormat format = new AudioFormat(AudioFormat.Encoding.PCM_SIGNED,
                     input.getSampleRate(), 16, input.getChannels(), input.getChannels() * 2,
                     input.getSampleRate(), false);
@@ -43,13 +45,19 @@ public final class AudioAnalyzer {
         int channels = format.getChannels();
         int frameSize = format.getFrameSize();
         int windowFrames = Math.max(1, Math.round(format.getSampleRate() / 20));
-        long maxFrames = Math.round(format.getSampleRate() * (longTrack ? 36 : 24));
+        long maxFrames = Math.round(format.getSampleRate() * (longTrack ? 180 : 90));
+        int stride = Math.max(1, Math.round(format.getSampleRate() / 11025));
+        float[] mono = new float[(int)(maxFrames / stride + 1)]; int captured = 0;
+        double downsample = 0; int downsampleCount = 0;
         long earlyEnd = Math.round(format.getSampleRate() * 8);
         long laterStart = Math.round(format.getSampleRate() * 20);
         byte[] buffer = new byte[8192 - 8192 % frameSize];
         double[] previous = new double[channels];
         List<Double> rmsWindows = new ArrayList<>();
         List<Double> changeWindows = new ArrayList<>();
+        List<Double> continuousEnvelope = new ArrayList<>();
+        double fullWindowSquares = 0;
+        int fullWindowFrames = 0;
         double squares = 0;
         double windowSquares = 0;
         double windowChanges = 0;
@@ -92,6 +100,15 @@ public final class AudioAnalyzer {
                         windowSamples = 0;
                     }
                 }
+                double mix = 0;
+                for (int channel=0;channel<channels;channel++) {int at=offset+channel*2; mix += (short)(((buffer[at+1]&255)<<8)|(buffer[at]&255))/32768d;}
+                downsample += mix/channels; downsampleCount++;
+                fullWindowSquares += (mix/channels)*(mix/channels);
+                if (++fullWindowFrames == windowFrames) {
+                    continuousEnvelope.add(Math.sqrt(fullWindowSquares/fullWindowFrames));
+                    fullWindowSquares = 0; fullWindowFrames = 0;
+                }
+                if (downsampleCount==stride) {mono[captured++]=(float)(downsample/stride);downsample=0;downsampleCount=0;}
                 frames++;
             }
         }
@@ -106,7 +123,9 @@ public final class AudioAnalyzer {
         double sampledSeconds = samples / (format.getSampleRate() * channels);
         int activity = bounded(onsets(rmsWindows, changeWindows) / Math.max(0.1, sampledSeconds) * 38);
         int energy = bounded(loudness * 0.65 + activity * 0.35);
-        return new TrackTags(energy, activity, true, size, modified);
+        if (fullWindowFrames > 0) continuousEnvelope.add(Math.sqrt(fullWindowSquares/fullWindowFrames));
+        var features = SpectralFeatures.measure(mono,captured,format.getSampleRate()/stride,continuousEnvelope,energy,activity,size,modified);
+        return new TrackTags(energy, activity, true, size, modified, features);
     }
 
     private int onsets(List<Double> rms, List<Double> changes) {

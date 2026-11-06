@@ -22,6 +22,8 @@ public final class GlobalMediaKeys implements AutoCloseable, NativeKeyListener {
     private final Actions actions;
     private volatile boolean registered;
     private volatile boolean closed;
+    private volatile boolean nativeTransportActive;
+    public void setNativeTransportActive(boolean active) { nativeTransportActive = active; }
     private long lastEventAt;
     private int lastKey;
 
@@ -49,6 +51,7 @@ public final class GlobalMediaKeys implements AutoCloseable, NativeKeyListener {
     }
 
     @Override public void nativeKeyPressed(NativeKeyEvent event) {
+        if (nativeTransportActive || closed) return;
         int key = event.getKeyCode();
         long now = System.nanoTime();
         synchronized (this) {
@@ -61,8 +64,7 @@ public final class GlobalMediaKeys implements AutoCloseable, NativeKeyListener {
             case NativeKeyEvent.VC_MEDIA_STOP -> actions::stop;
             case NativeKeyEvent.VC_MEDIA_PREVIOUS -> actions::previous;
             case NativeKeyEvent.VC_MEDIA_NEXT -> actions::next;
-            case NativeKeyEvent.VC_VOLUME_UP -> () -> actions.volume(1);
-            case NativeKeyEvent.VC_VOLUME_DOWN -> () -> actions.volume(-1);
+            // Windows already handles system volume keys. Applying app gain too doubles the change.
             default -> null;
         };
         if (action != null) SwingUtilities.invokeLater(action);

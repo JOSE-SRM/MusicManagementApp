@@ -4,6 +4,9 @@ import javax.swing.*;
 import java.awt.Toolkit;
 import java.awt.event.KeyEvent;
 import java.util.function.Consumer;
+import sangitam.desktop.model.ShortcutBindings;
+import sangitam.desktop.model.ShortcutBindings.Command;
+import java.util.*;
 
 /** Application menus. Live library and playback actions coexist with clearly notified future commands. */
 public final class AppMenuBar extends JMenuBar {
@@ -11,20 +14,24 @@ public final class AppMenuBar extends JMenuBar {
     private JCheckBoxMenuItem shuffleItem;
     private JCheckBoxMenuItem repeatItem;
     private JCheckBoxMenuItem libraryItem;
+    private final Map<Command, java.util.List<JMenuItem>> shortcutItems = new EnumMap<>(Command.class);
+    private Runnable keyboardShortcuts = () -> { };
+    private Runnable recentAction = () -> { }, playerVisibility = () -> { };
+    private java.util.function.IntConsumer sortAction = ignored -> { };
 
     public AppMenuBar(Runnable openMedia, Runnable exportPlaylist, Runnable quickActions, Runnable playPause,
                       Runnable previousTrack, Runnable nextTrack, Runnable showSearch,
                       Runnable showDiscover, Runnable preferences, Runnable toggleLibrary,
                       Runnable toggleShuffle, Runnable toggleRepeat, Runnable rescanLibrary,
-                      Consumer<String> notify, Runnable exit) {
+                      Consumer<String> notify, Runnable exit, Runnable audioSettings) {
         setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, Theme.DIVIDER));
 
         JMenu file = menu("File");
         file.add(item("Add files or folder…", AppIcons.Kind.FOLDER, KeyEvent.VK_O, openMedia));
-        file.add(item("Open recent", AppIcons.Kind.MUSIC, 0, () -> notify.accept("Open recent selected")));
+        file.add(item("Recently played", AppIcons.Kind.MUSIC, 0, () -> recentAction.run()));
         JMenu export = menu("Export");
         export.add(item("Export current playlist…", AppIcons.Kind.MUSIC, 0, exportPlaylist));
-        export.add(item("Export library report…", AppIcons.Kind.MUSIC, 0, () -> notify.accept("Export report selected")));
+        export.add(unavailable("Export library report…", AppIcons.Kind.MUSIC));
         file.add(export);
         file.addSeparator();
         file.add(item("Exit", AppIcons.Kind.COLLAPSE, KeyEvent.VK_Q, exit));
@@ -32,10 +39,10 @@ public final class AppMenuBar extends JMenuBar {
         JMenu edit = menu("Edit");
         edit.add(item("Quick actions…", AppIcons.Kind.SEARCH, KeyEvent.VK_K, quickActions));
         edit.addSeparator();
-        edit.add(item("Undo", AppIcons.Kind.PREVIOUS, KeyEvent.VK_Z, () -> notify.accept("Undo selected")));
-        edit.add(item("Redo", AppIcons.Kind.NEXT, KeyEvent.VK_Y, () -> notify.accept("Redo selected")));
+        edit.add(unavailable("Undo", AppIcons.Kind.PREVIOUS));
+        edit.add(unavailable("Redo", AppIcons.Kind.NEXT));
         edit.addSeparator();
-        edit.add(item("Select all", AppIcons.Kind.MUSIC, KeyEvent.VK_A, () -> notify.accept("Select all selected")));
+        edit.add(unavailable("Select all", AppIcons.Kind.MUSIC));
         edit.add(item("Find…", AppIcons.Kind.SEARCH, KeyEvent.VK_F, showSearch));
         edit.add(item("Discover online…", AppIcons.Kind.SEARCH, 0, showDiscover));
         edit.add(item("Preferences…", AppIcons.Kind.SETTINGS, 0, preferences));
@@ -45,18 +52,20 @@ public final class AppMenuBar extends JMenuBar {
         JRadioButtonMenuItem comfortable = radioItem("Comfortable", true, notify);
         JRadioButtonMenuItem compact = radioItem("Compact", false, notify);
         density.add(comfortable); density.add(compact);
+        comfortable.setEnabled(false); compact.setEnabled(false);
+        comfortable.setToolTipText("Density presets are not implemented yet"); compact.setToolTipText(comfortable.getToolTipText());
         view.add(comfortable); view.add(compact);
         view.addSeparator();
         libraryItem = checkActionItem("Show library", toggleLibrary);
         libraryItem.setSelected(true);
         view.add(libraryItem);
-        view.add(checkItem("Show player bar", true, notify));
+        JCheckBoxMenuItem playerBar = checkActionItem("Show player bar", () -> playerVisibility.run()); playerBar.setSelected(true); view.add(playerBar);
         JMenu sort = menu("Sort library by");
-        sort.add(item("Title", AppIcons.Kind.MUSIC, 0, () -> notify.accept("Library sorted by title")));
-        sort.add(item("Artist", AppIcons.Kind.MUSIC, 0, () -> notify.accept("Library sorted by artist")));
-        sort.add(item("Recently added", AppIcons.Kind.MUSIC, 0, () -> notify.accept("Library sorted by recently added")));
+        sort.add(item("Alphabetical", AppIcons.Kind.MUSIC, 0, () -> sortAction.accept(1)));
+        sort.add(item("Most played", AppIcons.Kind.MUSIC, 0, () -> sortAction.accept(2)));
+        sort.add(item("Recent", AppIcons.Kind.MUSIC, 0, () -> sortAction.accept(0)));
         view.add(sort);
-        view.add(item("Full screen", AppIcons.Kind.EXPAND, KeyEvent.VK_F11, () -> notify.accept("Full screen selected")));
+        view.add(unavailable("Full screen", AppIcons.Kind.EXPAND));
 
         JMenu playback = menu("Playback");
         playback.add(item("Play / pause", AppIcons.Kind.PLAY, 0, playPause));
@@ -67,6 +76,9 @@ public final class AppMenuBar extends JMenuBar {
         repeatItem = checkActionItem("Repeat current track", toggleRepeat);
         playback.add(shuffleItem);
         playback.add(repeatItem);
+        shortcutItems.put(Command.SHUFFLE, java.util.List.of(shuffleItem)); shortcutItems.put(Command.REPEAT, java.util.List.of(repeatItem));
+        playback.addSeparator();
+        playback.add(item("Audio & equalizer…", AppIcons.Kind.SETTINGS, 0, audioSettings));
 
         JMenu library = menu("Library");
         library.add(item("Add files or folder…", AppIcons.Kind.FOLDER, 0, openMedia));
@@ -76,12 +88,14 @@ public final class AppMenuBar extends JMenuBar {
 
         JMenu tools = menu("Tools");
         tools.add(item("Settings…", AppIcons.Kind.SETTINGS, 0, preferences));
+        tools.add(item("Audio & equalizer…", AppIcons.Kind.SETTINGS, 0, audioSettings));
         tools.add(item("Quick actions…", AppIcons.Kind.SEARCH, 0, quickActions));
+        tools.add(item("Keyboard shortcuts…", AppIcons.Kind.HELP, 0, () -> keyboardShortcuts.run()));
 
         JMenu help = menu("Help");
-        help.add(item("Keyboard shortcuts", AppIcons.Kind.HELP, 0, () -> notify.accept("Keyboard shortcuts selected")));
-        help.add(item("User guide", AppIcons.Kind.HELP, 0, () -> notify.accept("User guide selected")));
-        help.add(item("Check for updates", AppIcons.Kind.HELP, 0, () -> notify.accept("Check for updates selected")));
+        help.add(item("Keyboard shortcuts…", AppIcons.Kind.HELP, 0, () -> keyboardShortcuts.run()));
+        help.add(unavailable("User guide", AppIcons.Kind.HELP));
+        help.add(unavailable("Check for updates", AppIcons.Kind.HELP));
         help.addSeparator();
         help.add(item("About Sangitam", AppIcons.Kind.MUSIC, 0, () -> notify.accept("Sangitam desktop prototype")));
 
@@ -91,6 +105,17 @@ public final class AppMenuBar extends JMenuBar {
     public void setShuffleSelected(boolean selected) { shuffleItem.setSelected(selected); }
     public void setRepeatSelected(boolean selected) { repeatItem.setSelected(selected); }
     public void setLibrarySelected(boolean selected) { libraryItem.setSelected(selected); }
+    public void setKeyboardShortcutsAction(Runnable action) { keyboardShortcuts = action; }
+    public void setRecentAction(Runnable action) { recentAction = action; }
+    public void setPlayerVisibilityAction(Runnable action) { playerVisibility = action; }
+    public void setSortAction(java.util.function.IntConsumer action) { sortAction = action; }
+    private JMenuItem unavailable(String label, AppIcons.Kind icon) { JMenuItem item = item(label, icon, 0, () -> { }); item.setEnabled(false); item.setToolTipText("Not implemented yet"); return item; }
+    public void setShortcutBindings(ShortcutBindings bindings) {
+        shortcutItems.forEach((command, items) -> items.forEach(item -> {
+            KeyStroke key = bindings.key(command);
+            item.setAccelerator(key != null && key.getModifiers() == 0 && key.getKeyCode() == KeyEvent.VK_SPACE ? null : key);
+        }));
+    }
 
     private JMenu menu(String text) {
         JMenu menu = new JMenu(text);
@@ -103,9 +128,22 @@ public final class AppMenuBar extends JMenuBar {
         JMenuItem item = new JMenuItem(text, AppIcons.of(icon, 15, Theme.BLUE));
         item.setFont(Theme.BODY);
         item.addActionListener(event -> action.run());
+        Command command = switch (text) {
+            case "Add files or folder…" -> Command.IMPORT;
+            case "Exit" -> Command.QUIT;
+            case "Quick actions…" -> Command.QUICK;
+            case "Find…", "Search local library…" -> Command.SEARCH;
+            case "Play / pause" -> Command.PLAY_PAUSE;
+            case "Previous track" -> Command.PREVIOUS;
+            case "Next track" -> Command.NEXT;
+            case "Audio & equalizer…" -> Command.EQ;
+            case "Show or hide library panel" -> Command.LIBRARY;
+            default -> null;
+        };
+        if (command != null) shortcutItems.computeIfAbsent(command, ignored -> new ArrayList<>()).add(item);
         if (keyCode != 0) {
             item.setAccelerator(KeyStroke.getKeyStroke(keyCode,
-                Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx()));
+                java.awt.GraphicsEnvironment.isHeadless() ? java.awt.event.InputEvent.CTRL_DOWN_MASK : Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx()));
         }
         return item;
     }

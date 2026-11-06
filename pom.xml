@@ -80,7 +80,7 @@
                 <version>3.5.2</version>
                 <configuration>
                     <useModulePath>false</useModulePath>
-                    <argLine>-Djava.awt.headless=true --enable-native-access=ALL-UNNAMED</argLine>
+                    <argLine>-Djava.awt.headless=true -Dsangitam.artistOnline=false --enable-native-access=ALL-UNNAMED</argLine>
                 </configuration>
             </plugin>
             <plugin>

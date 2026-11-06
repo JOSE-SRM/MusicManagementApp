@@ -17,6 +17,39 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
 
 class PlayerBarTest {
+    @Test void percentageVolumeReaches150AndReflectsFallbackLimit() throws Exception {
+        AtomicReference<Double> volume = new AtomicReference<>();
+        SwingUtilities.invokeAndWait(() -> {
+            PlayerBar bar = new PlayerBar(new PlayerBar.Actions() {
+                public void playPause() { }
+                public void previous() { }
+                public void next() { }
+                public void seek(double fraction) { }
+                public void volume(double fraction) { volume.set(fraction); }
+            });
+            JSlider slider = findVolume(bar);
+            assertNotNull(slider);
+            assertEquals(0, slider.getMinimum());
+            assertEquals(150, slider.getMaximum());
+            slider.setValue(150);
+            assertEquals(1.5, volume.get());
+            assertTrue(slider.getToolTipText().contains("150%"));
+            bar.setVolumeFraction(1.25);
+            assertEquals(125, slider.getValue());
+            assertEquals(1.25, volume.get());
+            bar.setMaximumVolume(1);
+            assertEquals(100, slider.getMaximum());
+            assertEquals(100, slider.getValue());
+            assertEquals(1, volume.get());
+            assertTrue(slider.getToolTipText().contains("JavaFX fallback limit"));
+            bar.setMaximumVolume(1.5);
+            bar.setVolumeFraction(1.5);
+            assertEquals(150, slider.getValue());
+            bar.setVolumeFraction(0);
+            assertEquals(0, volume.get());
+        });
+    }
+
     @Test void clickAndDragEachSubmitOneSeekOnRelease() throws Exception {
         AtomicReference<Double> seek = new AtomicReference<>();
         AtomicInteger seeks = new AtomicInteger();
@@ -71,6 +104,17 @@ class PlayerBarTest {
             if (child instanceof JSlider slider && "Track position".equals(slider.getToolTipText())) return slider;
             if (child instanceof Container nested) {
                 JSlider found = findProgress(nested);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    private static JSlider findVolume(Container parent) {
+        for (Component child : parent.getComponents()) {
+            if (child instanceof JSlider slider && "Volume".equals(slider.getAccessibleContext().getAccessibleName())) return slider;
+            if (child instanceof Container nested) {
+                JSlider found = findVolume(nested);
                 if (found != null) return found;
             }
         }

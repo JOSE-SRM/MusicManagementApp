@@ -5,10 +5,6 @@ import javax.swing.UIManager;
 import javax.swing.border.Border;
 import java.awt.Color;
 import java.awt.Font;
-import java.awt.GraphicsEnvironment;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Set;
 
 /**
  * Central visual language for Sangitam.
@@ -24,9 +20,10 @@ public final class Theme {
     public static final Color TEXT = new Color(240, 247, 252);
     public static final Color TEXT_MUTED = new Color(145, 165, 181);
     public static final Color DIVIDER = new Color(31, 45, 58);
+    public static final Color SCROLL_THUMB = new Color(75, 96, 115);
     public static final Color SUCCESS = new Color(100, 218, 178);
 
-    public static final String FONT_FAMILY = resolveFontFamily();
+    public static final String FONT_FAMILY = System.getProperty("os.name", "").startsWith("Windows") ? "Segoe UI" : Font.DIALOG;
     public static final Font BODY = font(Font.PLAIN, 15);
     public static final Font BODY_BOLD = font(Font.BOLD, 15);
     public static final Font SMALL = font(Font.PLAIN, 13);
@@ -60,12 +57,16 @@ public final class Theme {
         UIManager.put("TextField.caretForeground", BLUE);
         UIManager.put("TextField.font", BODY);
         UIManager.put("TextField.selectionBackground", BLUE_STRONG);
+        UIManager.put("TextField.border", new javax.swing.plaf.BorderUIResource(UiFactory.inputBorder()));
+        UIManager.put("FormattedTextField.border", new javax.swing.plaf.BorderUIResource(UiFactory.inputBorder()));
         UIManager.put("TextArea.background", SURFACE_RAISED);
         UIManager.put("TextArea.foreground", TEXT);
         UIManager.put("TextArea.font", BODY);
+        UIManager.put("ComboBoxUI", FlatInputUI.Combo.class.getName());
         UIManager.put("ComboBox.background", SURFACE_RAISED);
         UIManager.put("ComboBox.foreground", TEXT);
         UIManager.put("ComboBox.font", BODY);
+        UIManager.put("ComboBox.border", new javax.swing.plaf.BorderUIResource(UiFactory.roundedBorder(DIVIDER, 8)));
         UIManager.put("ComboBox.selectionBackground", BLUE_STRONG);
         UIManager.put("ComboBox.selectionForeground", TEXT);
         UIManager.put("CheckBox.background", SURFACE);
@@ -106,7 +107,8 @@ public final class Theme {
         UIManager.put("Separator.foreground", DIVIDER);
         UIManager.put("ToolTip.background", SURFACE_RAISED);
         UIManager.put("ToolTip.foreground", TEXT);
-        UIManager.put("ScrollPane.border", BorderFactory.createEmptyBorder());
+        UIManager.put("ScrollPane.border", new javax.swing.plaf.BorderUIResource(BorderFactory.createEmptyBorder()));
+        UIManager.put("ScrollBarUI", RoundScrollBarUI.class.getName());
         UIManager.put("Viewport.background", BLACK);
         UIManager.put("ScrollBar.width", 10);
         UIManager.put("ScrollBar.background", BLACK);
@@ -115,6 +117,7 @@ public final class Theme {
         UIManager.put("ScrollBar.thumbHighlight", BLUE_STRONG);
         UIManager.put("ScrollBar.thumbShadow", SURFACE_HOVER);
         UIManager.put("ScrollBar.thumbDarkShadow", SURFACE);
+        UIManager.put("TabbedPaneUI", RoundTabUI.class.getName());
         UIManager.put("TabbedPane.background", BLACK);
         UIManager.put("TabbedPane.foreground", TEXT);
         UIManager.put("TabbedPane.font", BODY_BOLD);
@@ -135,6 +138,9 @@ public final class Theme {
         UIManager.put("ProgressBar.selectionForeground", BLACK);
         UIManager.put("ProgressBar.font", SMALL);
         UIManager.put("Spinner.font", BODY);
+        UIManager.put("SpinnerUI", FlatInputUI.Spinner.class.getName());
+        UIManager.put("Spinner.background", SURFACE_RAISED);
+        UIManager.put("Spinner.border", new javax.swing.plaf.BorderUIResource(UiFactory.roundedBorder(DIVIDER, 8)));
         UIManager.put("OptionPane.background", SURFACE);
         UIManager.put("OptionPane.messageForeground", TEXT);
     }
@@ -147,17 +153,4 @@ public final class Theme {
         return new Font(FONT_FAMILY, style, size);
     }
 
-    /** Uses a polished native family when present while retaining a safe cross-platform fallback. */
-    private static String resolveFontFamily() {
-        Set<String> available = new HashSet<>(Arrays.asList(
-            GraphicsEnvironment.getLocalGraphicsEnvironment().getAvailableFontFamilyNames()));
-        String[] preferred = {
-            "Inter", "Avenir Next", "SF Pro Text", "Helvetica Neue",
-            "Segoe UI Variable", "Segoe UI", "Noto Sans", "Liberation Sans", "Arial"
-        };
-        for (String family : preferred) {
-            if (available.contains(family)) return family;
-        }
-        return Font.DIALOG;
-    }
 }

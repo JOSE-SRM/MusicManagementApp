@@ -8,6 +8,7 @@ import org.jaudiotagger.tag.Tag;
 import sangitam.desktop.model.FileStamp;
 import sangitam.desktop.model.LibrarySource;
 import sangitam.desktop.model.Track;
+import sangitam.desktop.model.TrackMetadata;
 
 import java.io.IOException;
 import java.nio.file.FileVisitResult;
@@ -37,7 +38,7 @@ public final class LibraryScanner {
             this(visited, accepted, current, "Scanning");
         }
     }
-    public record KnownTrack(Track track, FileStamp stamp, boolean repairLabels) { }
+    public record KnownTrack(Track track, FileStamp stamp, boolean forceMetadataRead) { }
     public record Result(List<Track> tracks, int skipped, List<String> errors,
                          Map<Path, FileStamp> stamps, Set<Path> unavailable,
                          List<LibrarySource> sources, int reused) { }
@@ -179,7 +180,7 @@ public final class LibraryScanner {
                     throw new IOException("File is missing or unreadable");
                 }
                 FileStamp stamp = new FileStamp(attrs.size(), attrs.lastModifiedTime().toMillis());
-                if (previous != null && stamp.equals(previous.stamp()) && !previous.repairLabels()) {
+                if (previous != null && stamp.equals(previous.stamp()) && !previous.forceMetadataRead()) {
                     tracks.add(previous.track());
                     reused++;
                 } else {
@@ -209,7 +210,35 @@ public final class LibraryScanner {
             String album = field(tag, FieldKey.ALBUM, "Unknown album");
             String genre = field(tag, FieldKey.GENRE, GenreHints.fromFolder(canonical));
             double duration = audio.getAudioHeader() == null ? 0 : audio.getAudioHeader().getPreciseTrackLength();
-            return new Track(identity, title, artist, album, duration, extension.toUpperCase(Locale.ROOT), genre);
+            var fields = new java.util.EnumMap<TrackMetadata.Field, TrackMetadata.Value>(TrackMetadata.Field.class);
+            var keys = java.util.Map.ofEntries(
+                java.util.Map.entry(TrackMetadata.Field.COMPOSER, FieldKey.COMPOSER),
+                java.util.Map.entry(TrackMetadata.Field.CONDUCTOR, FieldKey.CONDUCTOR),
+                java.util.Map.entry(TrackMetadata.Field.PERFORMERS, FieldKey.PERFORMER_NAME),
+                java.util.Map.entry(TrackMetadata.Field.ORCHESTRA, FieldKey.ORCHESTRA),
+                java.util.Map.entry(TrackMetadata.Field.ALBUM_ARTIST, FieldKey.ALBUM_ARTIST),
+                java.util.Map.entry(TrackMetadata.Field.WORK, FieldKey.WORK),
+                java.util.Map.entry(TrackMetadata.Field.MOVEMENT, FieldKey.MOVEMENT),
+                java.util.Map.entry(TrackMetadata.Field.KEY, FieldKey.KEY),
+                java.util.Map.entry(TrackMetadata.Field.OPUS, FieldKey.OPUS),
+                java.util.Map.entry(TrackMetadata.Field.PERIOD, FieldKey.PERIOD),
+                java.util.Map.entry(TrackMetadata.Field.FORM, FieldKey.WORK_TYPE),
+                java.util.Map.entry(TrackMetadata.Field.INSTRUMENTATION, FieldKey.INSTRUMENT));
+            keys.forEach((role, key) -> {
+                String value = field(tag, key, "");
+                if (!value.isBlank()) fields.put(role, new TrackMetadata.Value(value, TrackMetadata.Origin.EMBEDDED));
+            });
+            String composerFolder = classicalComposer(canonical);
+            if (!composerFolder.isBlank()) fields.putIfAbsent(TrackMetadata.Field.COMPOSER,
+                new TrackMetadata.Value(composerFolder, TrackMetadata.Origin.FOLDER_HINT));
+            var header = audio.getAudioHeader();
+            var metadata = new TrackMetadata(ClassicalHints.enrich(canonical, title, genre, fields),
+                TrackMetadata.normalizeTags(java.util.Arrays.stream(field(tag, FieldKey.TAGS, "").split("[,;]"))
+                    .map(String::strip).filter(value -> value.length() <= 80).limit(128).toList()),
+                header == null ? 0 : (int) Math.min(Integer.MAX_VALUE, header.getBitRateAsNumber()),
+                header == null ? 0 : header.getSampleRateAsNumber(), header == null ? 0 : header.getBitsPerSample(),
+                header == null ? "" : header.getChannels(), hasArtwork(tag), TrackMetadata.CURRENT_VERSION);
+            return new Track(identity, title, artist, album, duration, extension.toUpperCase(Locale.ROOT), genre, metadata);
         }
 
         private String field(Tag tag, FieldKey key, String fallback) {
@@ -220,6 +249,11 @@ public final class LibraryScanner {
             } catch (RuntimeException ignored) {
                 return fallback;
             }
+        }
+
+        private boolean hasArtwork(Tag tag) {
+            try { return tag != null && tag.getArtworkList() != null && !tag.getArtworkList().isEmpty(); }
+            catch (RuntimeException ignored) { return false; }
         }
 
         private void reportError(String message) {

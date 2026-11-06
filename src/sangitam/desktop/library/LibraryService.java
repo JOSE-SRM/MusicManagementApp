@@ -4,6 +4,7 @@ import sangitam.desktop.model.FileStamp;
 import sangitam.desktop.model.LibrarySource;
 import sangitam.desktop.model.Track;
 import sangitam.desktop.model.TrackTags;
+import sangitam.desktop.model.DetailReset;
 import sangitam.desktop.storage.LibraryStore;
 
 import javax.swing.SwingUtilities;
@@ -25,7 +26,8 @@ public final class LibraryService {
     public record ImportSummary(int added, int indexed, int skipped, int unanalyzed,
                                 List<String> errors, boolean cancelled, int reused, int unavailable, List<Path> paths) { }
     public record Catalog(List<Track> tracks, Map<Path, TrackTags> tags, Map<Path, Integer> playCounts,
-                          Set<Path> manualTags, Set<Path> unavailable, Map<Path, Long> recent, Set<Path> labelRepairs) {
+                          Set<Path> manualTags, Set<Path> unavailable, Map<Path, Long> recent, Set<Path> metadataRefreshPaths,
+                          Map<Path, FileStamp> stamps, Map<Path, Track> byPath, long measuredCount) {
         public Catalog {
             tracks = List.copyOf(tracks);
             tags = Map.copyOf(tags);
@@ -33,7 +35,24 @@ public final class LibraryService {
             manualTags = Set.copyOf(manualTags);
             unavailable = Set.copyOf(unavailable);
             recent = Map.copyOf(recent);
-            labelRepairs = Set.copyOf(labelRepairs);
+            metadataRefreshPaths = Set.copyOf(metadataRefreshPaths);
+            stamps = Map.copyOf(stamps);
+            byPath = Map.copyOf(byPath);
+        }
+        public Catalog(List<Track> tracks, Map<Path, TrackTags> tags, Map<Path, Integer> playCounts,
+                       Set<Path> manualTags, Set<Path> unavailable, Map<Path, Long> recent,
+                       Set<Path> metadataRefreshPaths, Map<Path, FileStamp> stamps) {
+            this(tracks, tags, playCounts, manualTags, unavailable, recent, metadataRefreshPaths, stamps,
+                indexPaths(tracks), tags.values().stream().filter(value -> value.features().version() > 0).count());
+        }
+        private static Map<Path, Track> indexPaths(List<Track> tracks) {
+            var index = new HashMap<Path, Track>();
+            for (Track track : tracks) index.put(track.path(), track);
+            return index;
+        }
+        public Catalog(List<Track> tracks, Map<Path, TrackTags> tags, Map<Path, Integer> playCounts,
+                       Set<Path> manualTags, Set<Path> unavailable, Map<Path, Long> recent, Set<Path> metadataRefreshPaths) {
+            this(tracks, tags, playCounts, manualTags, unavailable, recent, metadataRefreshPaths, Map.of());
         }
         public Catalog(List<Track> tracks, Map<Path, TrackTags> tags, Map<Path, Integer> playCounts) {
             this(tracks, tags, playCounts, Set.of(), Set.of(), Map.of(), Set.of());
@@ -42,7 +61,7 @@ public final class LibraryService {
         public int playsFor(Track track) { return playCounts.getOrDefault(track.path(), 0); }
     }
     private record Snapshot(Catalog catalog, long revision) { }
-    private enum ScanMode { IMPORT, RESCAN, REPAIR_LABELS }
+    private enum ScanMode { IMPORT, RESCAN, REFRESH_METADATA }
 
     private final LibraryStore store;
     private final Object scanLock = new Object();
@@ -52,7 +71,10 @@ public final class LibraryService {
     private final List<Consumer<Catalog>> catalogListeners = new ArrayList<>();
     private final AtomicLong revisions = new AtomicLong();
     private Catalog catalog = new Catalog(List.of(), Map.of(), Map.of());
+    private Catalog latestStoredCatalog; // Accessed only under the store lock.
     private long publishedRevision = -1;
+    private boolean initialLoaded;
+    public boolean initialLoaded() { return initialLoaded; }
 
     public LibraryService(LibraryStore store) { this.store = store; }
 
@@ -75,17 +97,18 @@ public final class LibraryService {
             @Override protected Snapshot doInBackground() throws Exception {
                 synchronized (store) {
                     store.initialize();
-                    return new Snapshot(readCatalog(), revisions.get());
+                    latestStoredCatalog = readCatalog();
+                    return new Snapshot(latestStoredCatalog, revisions.get());
                 }
             }
 
             @Override protected void done() {
                 try {
                     Snapshot loaded = get();
+                    initialLoaded = true;
                     publishSnapshot(loaded);
                     if (!catalog.tracks().isEmpty()) report.accept("Loaded " + catalog.tracks().size() + " saved tracks");
-                    repairLabels(report);
-                    analyzeMissing(report);
+                    refreshMetadata(report);
                 } catch (Exception error) {
                     report.accept("Library could not be loaded: " + cause(error).getMessage());
                 }
@@ -93,33 +116,54 @@ public final class LibraryService {
         }.execute();
     }
 
-    private void repairLabels(Consumer<String> report) {
-        List<LibrarySource> repairs = catalog.labelRepairs().stream()
-            .filter(path -> !catalog.unavailable().contains(path))
-            .map(path -> new LibrarySource(path, false))
-            .toList();
-        if (repairs.isEmpty()) return;
-        scanMedia(repairs, ScanMode.REPAIR_LABELS, ignored -> { }, result -> {
-            int repaired = result.indexed() - result.reused();
-            if (repaired > 0) report.accept("Refreshed labels for " + repaired + " tracks");
-        }, report);
+    private void refreshMetadata(Consumer<String> report) {
+        if (catalog.metadataRefreshPaths().isEmpty()) { analyzeMissing(report, false); return; }
+        Catalog input = catalog;
+        new SwingWorker<List<LibrarySource>, Void>() {
+            @Override protected List<LibrarySource> doInBackground() {
+                return input.metadataRefreshPaths().stream().filter(path -> !input.unavailable().contains(path))
+                    .map(path -> new LibrarySource(path, false)).toList();
+            }
+            @Override protected void done() {
+                try {
+                    List<LibrarySource> repairs = get();
+                    if (repairs.isEmpty()) { analyzeMissing(report, false); return; }
+                    scanMedia(repairs, ScanMode.REFRESH_METADATA, ignored -> { }, result -> {
+                        int repaired = result.indexed() - result.reused();
+                        if (repaired > 0) report.accept("Refreshed metadata for " + repaired + " tracks");
+                        analyzeMissing(report, false);
+                    }, report);
+                } catch (Exception error) { report.accept("Could not prepare metadata refresh"); }
+            }
+        }.execute();
     }
 
     /** Reanalyzes older libraries in the background after their tracks are already visible. */
-    private void analyzeMissing(Consumer<String> report) {
+    private SwingWorker<?,?> analysisWorker;
+    public void cancelAnalysis() { if (analysisWorker != null) analysisWorker.cancel(true); }
+    public void analyzeNow(Consumer<String> report) { analyzeMissing(report, true); }
+    private void analyzeMissing(Consumer<String> report, boolean checkDisk) {
+        if (analysisWorker != null && !analysisWorker.isDone()) { report.accept("Music analysis is already running"); return; }
         Catalog input = catalog;
-        new SwingWorker<Snapshot, Void>() {
+        analysisWorker = new SwingWorker<Snapshot, Void>() {
             private List<Track> missing = List.of();
             @Override protected Snapshot doInBackground() throws Exception {
-                missing = input.tracks().stream().filter(track -> !input.manualTags().contains(track.path()))
+                missing = input.tracks().stream()
                     .filter(track -> !input.unavailable().contains(track.path()))
+                    .filter(track -> checkDisk || !freshAtIndexedStamp(input, track))
                     .filter(track -> Files.isRegularFile(track.path()))
                     .filter(track -> !fresh(input.tagsFor(track), track.path())).toList();
                 if (missing.isEmpty()) return null;
+                long lastPublish=System.nanoTime(); int completed=0;
                 for (Track track : missing) {
                     if (isCancelled()) break;
                     TrackTags tags = analyzer.analyze(track.path(), track.durationSeconds());
                     synchronized (store) { store.saveTags(track.path(), tags); }
+                    completed++;
+                    if (System.nanoTime()-lastPublish>10_000_000_000L) {
+                        Snapshot partial; synchronized(store) { partial=changedSnapshot(); }
+                        int progress=completed; SwingUtilities.invokeLater(() -> { publishSnapshot(partial); report.accept("Deep analysis: "+progress+" / "+missing.size()); }); lastPublish=System.nanoTime();
+                    }
                 }
                 synchronized (store) { return changedSnapshot(); }
             }
@@ -136,7 +180,12 @@ public final class LibraryService {
                     report.accept("Some tracks could not be analyzed: " + cause(error).getMessage());
                 }
             }
-        }.execute();
+        }; analysisWorker.execute();
+    }
+
+    private boolean freshAtIndexedStamp(Catalog input, Track track) {
+        FileStamp stamp = input.stamps().get(track.path());
+        return stamp != null && stamp.size() >= 0 && input.tagsFor(track).features().current(stamp.size(), stamp.modifiedMillis());
     }
 
     public SwingWorker<ImportSummary, LibraryScanner.Progress> importMedia(
@@ -176,7 +225,7 @@ public final class LibraryService {
                 }
                 Map<Path, LibraryScanner.KnownTrack> known = new HashMap<>();
                 existing.forEach((path, entry) -> known.put(path, new LibraryScanner.KnownTrack(entry.track(),
-                    entry.stamp(), needsLabelRepair(entry))));
+                    entry.stamp(), needsMetadataRefresh(entry))));
                 LibraryScanner.Result result = scanner.scan(sources, known, mode == ScanMode.RESCAN,
                     path -> mode != ScanMode.RESCAN || exclusions.stream().noneMatch(path::startsWith), update -> {
                     if (update.visited() % 32 == 1) publish(update);
@@ -240,7 +289,7 @@ public final class LibraryService {
                     String action = switch (mode) {
                         case IMPORT -> "Import";
                         case RESCAN -> "Rescan";
-                        case REPAIR_LABELS -> "Track label refresh";
+                        case REFRESH_METADATA -> "Track metadata refresh";
                     };
                     onError.accept(action + " failed: " + cause(error).getMessage());
                 }
@@ -252,6 +301,42 @@ public final class LibraryService {
 
     public void editDetails(List<Path> paths, LibraryStore.DetailChanges changes, Consumer<String> report) {
         changeCatalog(() -> store.updateDetails(paths, changes), "Track details saved", report);
+    }
+    public void refreshFromStore(Consumer<String> report) { changeCatalog(() -> { }, "Artist identities refreshed", report); }
+
+    public void restoreDetails(List<Path> paths, DetailReset reset, Consumer<String> report) {
+        if (reset.empty()) { report.accept("Select at least one detail to restore."); return; }
+        List<Path> requested = paths.stream().map(path -> path.toAbsolutePath().normalize()).distinct().toList();
+        Set<Path> selected = Set.copyOf(requested);
+        new SwingWorker<Snapshot, Void>() {
+            private int restored;
+            @Override protected Snapshot doInBackground() throws Exception {
+                synchronized (scanLock) {
+                    var known = new HashMap<Path, LibraryScanner.KnownTrack>();
+                    synchronized (store) {
+                        for (var entry : store.loadCatalog()) {
+                            if (selected.contains(entry.track().path())) known.put(entry.track().path(),
+                                new LibraryScanner.KnownTrack(entry.track(), entry.stamp(), true));
+                        }
+                    }
+                    var sources = known.keySet().stream().map(path -> new LibrarySource(path, false)).toList();
+                    var read = scanner.scan(sources, known, false, ignored -> { }, this::isCancelled);
+                    if (isCancelled()) return null;
+                    synchronized (store) {
+                        restored = store.restoreDetails(read.tracks(), reset);
+                        return restored == 0 ? null : changedSnapshot();
+                    }
+                }
+            }
+            @Override protected void done() {
+                try {
+                    Snapshot snapshot = get();
+                    if (snapshot != null) publishSnapshot(snapshot);
+                    int skipped = requested.size() - restored;
+                    report.accept("Restored file details for " + restored + " tracks" + (skipped == 0 ? "" : " · " + skipped + " unchanged (unavailable, unreadable, or no longer indexed)"));
+                } catch (Exception error) { report.accept("Could not restore file details: " + cause(error).getMessage()); }
+            }
+        }.execute();
     }
 
     public void removeFromLibrary(List<Path> paths, Path scope, Consumer<String> report) {
@@ -292,12 +377,21 @@ public final class LibraryService {
         new SwingWorker<Snapshot, Void>() {
             @Override protected Snapshot doInBackground() throws Exception {
                 synchronized (store) {
-                    store.recordPlay(path);
-                    return changedSnapshot();
+                    var play = store.recordPlay(path);
+                    if (play == null) return null;
+                    var current = latestStoredCatalog;
+                    if (current == null || !current.byPath().containsKey(path)) return changedSnapshot();
+                    var counts = new HashMap<>(current.playCounts());
+                    counts.put(path, play.plays());
+                    var recent = new HashMap<>(current.recent());
+                    recent.put(path, play.recentAt());
+                    latestStoredCatalog = new Catalog(current.tracks(), current.tags(), counts, current.manualTags(),
+                        current.unavailable(), recent, current.metadataRefreshPaths(), current.stamps(), current.byPath(), current.measuredCount());
+                    return new Snapshot(latestStoredCatalog, revisions.incrementAndGet());
                 }
             }
             @Override protected void done() {
-                try { publishSnapshot(get()); }
+                try { var update = get(); if (update != null) publishSnapshot(update); }
                 catch (Exception error) { onError.accept("Could not save play history: " + cause(error).getMessage()); }
             }
         }.execute();
@@ -323,7 +417,7 @@ public final class LibraryService {
     }
 
     private boolean fresh(TrackTags tags, Path path) {
-        try { return tags.matches(Files.size(path), Files.getLastModifiedTime(path).toMillis()); }
+        try { return tags.features().current(Files.size(path), Files.getLastModifiedTime(path).toMillis()); }
         catch (Exception error) { return false; }
     }
 
@@ -334,7 +428,8 @@ public final class LibraryService {
         Set<Path> manual = new HashSet<>();
         Set<Path> unavailable = new HashSet<>();
         Map<Path, Long> recent = new HashMap<>();
-        Set<Path> labelRepairs = new HashSet<>();
+        Set<Path> metadataRefreshPaths = new HashSet<>();
+        Map<Path, FileStamp> stamps = new HashMap<>();
         for (LibraryStore.CatalogEntry entry : store.loadCatalog()) {
             tracks.add(entry.track());
             tags.put(entry.track().path(), entry.tags());
@@ -342,17 +437,20 @@ public final class LibraryService {
             if (entry.manualTags()) manual.add(entry.track().path());
             if (entry.unavailable()) unavailable.add(entry.track().path());
             recent.put(entry.track().path(), entry.recentAt());
-            if (needsLabelRepair(entry)) labelRepairs.add(entry.track().path());
+            stamps.put(entry.track().path(), entry.stamp());
+            if (needsMetadataRefresh(entry)) metadataRefreshPaths.add(entry.track().path());
         }
-        return new Catalog(tracks, tags, plays, manual, unavailable, recent, labelRepairs);
+        return new Catalog(tracks, tags, plays, manual, unavailable, recent, metadataRefreshPaths, stamps);
     }
 
-    private boolean needsLabelRepair(LibraryStore.CatalogEntry entry) {
-        return LibraryScanner.needsLabelRepair(entry.track(), entry.titleOverride(), entry.artistOverride());
+    private boolean needsMetadataRefresh(LibraryStore.CatalogEntry entry) {
+        return entry.track().metadata().extractionVersion() < sangitam.desktop.model.TrackMetadata.CURRENT_VERSION
+            || LibraryScanner.needsLabelRepair(entry.track(), entry.titleOverride(), entry.artistOverride());
     }
 
     private Snapshot changedSnapshot() throws Exception {
-        return new Snapshot(readCatalog(), revisions.incrementAndGet());
+        latestStoredCatalog = readCatalog();
+        return new Snapshot(latestStoredCatalog, revisions.incrementAndGet());
     }
 
     private void publishSnapshot(Snapshot snapshot) {

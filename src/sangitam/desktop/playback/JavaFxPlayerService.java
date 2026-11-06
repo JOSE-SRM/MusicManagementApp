@@ -3,6 +3,7 @@ package sangitam.desktop.playback;
 import javafx.application.Platform;
 import javafx.scene.media.Media;
 import javafx.scene.media.MediaPlayer;
+import javafx.scene.media.EqualizerBand;
 import javafx.util.Duration;
 import sangitam.desktop.model.Track;
 
@@ -23,6 +24,10 @@ public final class JavaFxPlayerService implements PlayerService {
     private volatile long request;
     private MediaPlayer player; // accessed only on the JavaFX application thread
     private volatile double volume = 0.72;
+    private volatile Consumer<float[]> spectrum;
+    private final CoalescedCommand volumeCommand = new CoalescedCommand(this::onAudioThread, () -> { if (!closed && player != null) applyVolume(player); });
+    private volatile AudioSettings audioSettings = AudioSettings.defaults();
+    private volatile AudioStatus audioStatus = new AudioStatus(AudioStatus.Backend.JAVA_FX, AudioSettings.ReplayGain.OFF, null);
     private long lastPositionNotice;
 
     public JavaFxPlayerService() {
@@ -71,7 +76,8 @@ public final class JavaFxPlayerService implements PlayerService {
             Media media = new Media(track.path().toUri().toString());
             MediaPlayer next = new MediaPlayer(media);
             player = next;
-            next.setVolume(volume);
+            applySpectrum(next);
+            applyEqualizer(next);
             media.setOnError(() -> {
                 if (next == player) fail(id, track, "Cannot read audio: " + message(media.getError()));
             });
@@ -157,8 +163,58 @@ public final class JavaFxPlayerService implements PlayerService {
     }
 
     @Override public void setVolume(double volume) {
-        this.volume = Math.max(0, Math.min(1, volume));
-        onAudioThread(() -> { if (player != null) player.setVolume(this.volume); });
+        this.volume = Math.min(maximumVolume(), AudioGain.clamp(volume));
+        volumeCommand.request();
+    }
+
+    @Override public void setAudioSettings(AudioSettings settings) {
+        audioSettings = java.util.Objects.requireNonNull(settings);
+        onAudioThread(() -> { if (player != null) applyEqualizer(player); });
+    }
+
+    @Override public AudioStatus audioStatus() { return audioStatus; }
+    @Override public double maximumVolume() { return 1; }
+    @Override public boolean supportsSpectrum() { return true; }
+    @Override public void setSpectrumListener(Consumer<float[]> listener) { spectrum = listener; onAudioThread(() -> { if (player != null) applySpectrum(player); }); }
+    private void applySpectrum(MediaPlayer target) {
+        if (spectrum == null) { target.setAudioSpectrumListener(null); return; }
+        target.setAudioSpectrumNumBands(32); target.setAudioSpectrumThreshold(-72); target.setAudioSpectrumInterval(.1);
+        target.setAudioSpectrumListener((timestamp, duration, magnitudes, phases) -> {
+            Consumer<float[]> callback = spectrum; if (callback == null || target != player) return;
+            float[] sample = magnitudes.clone();
+            SwingUtilities.invokeLater(() -> { if (!closed && target == player && spectrum == callback) callback.accept(sample); });
+        });
+    }
+
+    private void applyVolume(MediaPlayer target) {
+        target.setVolume(AudioGain.linear(volume) * AudioGain.fromDecibels(audioStatus.error() == null ? audioSettings.effectivePreampDb() : 0));
+    }
+
+    private void applyEqualizer(MediaPlayer target) {
+        try {
+            var eq = target.getAudioEqualizer();
+            AudioSettings settings = audioSettings;
+            if (settings.equalizerEnabled()) {
+                if (eq.getBands().size() != settings.bands().size()
+                    || eq.getBands().getFirst().getCenterFrequency() != AudioSettings.FREQUENCIES.getFirst()) {
+                    eq.setEnabled(false);
+                    eq.getBands().clear();
+                    for (double frequency : AudioSettings.FREQUENCIES)
+                        eq.getBands().add(new EqualizerBand(frequency, frequency, 0));
+                }
+                for (int i = 0; i < settings.bands().size(); i++) {
+                    eq.getBands().get(i).setGain(settings.bands().get(i));
+                }
+            }
+            eq.setEnabled(settings.equalizerEnabled());
+            audioStatus = new AudioStatus(AudioStatus.Backend.JAVA_FX, AudioSettings.ReplayGain.OFF, null);
+        } catch (RuntimeException error) {
+            target.getAudioEqualizer().setEnabled(false);
+            audioStatus = new AudioStatus(AudioStatus.Backend.JAVA_FX, AudioSettings.ReplayGain.OFF,
+                "Equalizer unavailable; audio is playing without EQ.");
+            LOG.log(System.Logger.Level.DEBUG, "Could not apply equalizer", error);
+        }
+        applyVolume(target);
     }
 
     private void transport(LongConsumer action) {

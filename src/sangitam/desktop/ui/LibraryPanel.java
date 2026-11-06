@@ -6,6 +6,9 @@ import sangitam.desktop.model.LibraryCollections.Key;
 import sangitam.desktop.model.LibraryCollections.Kind;
 import sangitam.desktop.model.Track;
 import sangitam.desktop.storage.CollectionStore;
+import sangitam.desktop.model.SmartPlaylistRule;
+import sangitam.desktop.model.Playlist;
+import sangitam.desktop.storage.SmartPlaylistStore;
 
 import javax.swing.*;
 import javax.swing.event.DocumentEvent;
@@ -23,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
+import sangitam.desktop.ui.GeneralLibraryPages.Order;
 
 import static sangitam.desktop.model.LibraryCollections.Kind.*;
 
@@ -38,42 +42,54 @@ public final class LibraryPanel extends JPanel {
         void rescan();
         void play(List<Track> tracks);
         void queue(List<Track> tracks);
+        default void taste(List<Track> tracks,int rating) { }
+        default Integer tasteRating(List<Track> tracks) { return null; }
         void editDetails(List<Track> tracks, boolean group);
+        void restoreDetails(List<Track> tracks);
         void remove(List<Path> paths, Path scope);
         void open(LibraryEntry entry);
         void organize(String message, CollectionEdit edit);
         void deletePlaylist(long id);
         void entriesChanged();
-    }
-
-    private enum Order {
-        RECENT("Recent"), ALPHABETICAL("Alphabetical"), PLAYED("Most played");
-        private final String label;
-        Order(String label) { this.label = label; }
-        @Override public String toString() { return label; }
+        SmartPlaylistStore.Preview previewSmart(SmartPlaylistRule rule) throws Exception;
     }
 
     private final Actions actions;
     private final JTextField search = new JTextField();
+    private final JComboBox<String> category = new JComboBox<>(new String[]{"All", "Songs", "Artists", "Albums", "Playlists", "Folders"});
     private final JComboBox<Order> sort = new JComboBox<>(Order.values());
     private final JLabel count = UiFactory.label("0 tracks", Theme.SMALL, Theme.TEXT_MUTED);
     private final JLabel location = UiFactory.label("Library", Theme.SMALL, Theme.TEXT_MUTED);
     private final JButton back = UiFactory.button("Back", null, false);
     private final JTabbedPane tabs = new JTabbedPane();
     private final DefaultListModel<LibraryEntry> model = new DefaultListModel<>();
-    private final JList<LibraryEntry> general = new JList<>(model);
+    private final JList<LibraryEntry> general = new JList<>(model) {
+        @Override public String getToolTipText(MouseEvent event) {
+            LibraryEntry entry = entryAt(event.getPoint());
+            return entry == null ? null : LibraryHover.describe(entry, catalog, collections.pins().contains(entry.key()));
+        }
+    };
     private final LibraryFolderTree locations;
     private final JButton expand;
     private final Timer debounce = new Timer(160, event -> refreshView());
+    private final JButton previous = UiFactory.button("‹ Previous", null, false), next = UiFactory.button("Next ›", null, false), retry = UiFactory.button("Retry", null, false);
+    private final JPanel paging = new JPanel(new FlowLayout(FlowLayout.CENTER, 6, 0));
+    private SwingWorker<GeneralLibraryPages.Page, Void> pageWorker;
+    private long pageGeneration;
+    private int pageOffset;
+    private boolean entriesReady = true, closed;
+    private sangitam.desktop.model.LibraryCollections.Key restoreSelection;
     private final LibraryArtwork artwork = new LibraryArtwork();
     private final LibraryMenus menus;
     private LibraryService.Catalog catalog = new LibraryService.Catalog(List.of(), Map.of(), Map.of());
     private LibraryCollections collections = LibraryCollections.empty();
-    private List<LibraryEntry> entries = List.of();
-    private SwingWorker<List<LibraryEntry>, Void> loader;
+    private GeneralLibraryPages.Index entries = new GeneralLibraryPages.Index(List.of(), collections);
+    private SwingWorker<GeneralLibraryPages.Index, Void> loader;
     private long folder;
     private boolean expanded;
     private Timer animation;
+    private Runnable pageShown = () -> { };
+    void onFirstPage(Runnable action) { pageShown = action; }
 
     LibraryPanel(Actions actions) {
         super(new BorderLayout(0, 12));
@@ -96,7 +112,6 @@ public final class LibraryPanel extends JPanel {
         search.getAccessibleContext().setAccessibleName("Search library");
         search.setBorder(BorderFactory.createCompoundBorder(
             UiFactory.roundedBorder(Theme.DIVIDER, 8), Theme.padding(7, 9, 7, 9)));
-        listen(search, debounce::restart);
         debounce.setRepeats(false);
         tools.add(new JLabel(AppIcons.of(AppIcons.Kind.SEARCH, 16, Theme.TEXT_MUTED)), BorderLayout.WEST);
         tools.add(search, BorderLayout.CENTER);
@@ -112,16 +127,18 @@ public final class LibraryPanel extends JPanel {
         sort.getAccessibleContext().setAccessibleName("Library sort order");
         sort.addActionListener(event -> refreshView());
         controls.add(sort, BorderLayout.EAST);
-        JPanel top = new JPanel(new GridLayout(3, 1, 0, 8));
+        JPanel top = new JPanel(new GridLayout(4, 1, 0, 8));
         top.setOpaque(false);
         top.add(heading);
         top.add(tools);
         top.add(controls);
+        category.getAccessibleContext().setAccessibleName("Library category"); category.addActionListener(event -> refreshView()); top.add(category);
         top.setComponentPopupMenu(menus.libraryMenu());
         search.setComponentPopupMenu(menus.libraryMenu());
         add(top, BorderLayout.NORTH);
 
         general.setFixedCellHeight(63);
+        general.getAccessibleContext().setAccessibleName("General library page");
         general.setFixedCellWidth(210);
         general.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         general.setCellRenderer(new EntryRenderer());
@@ -156,6 +173,7 @@ public final class LibraryPanel extends JPanel {
         });
 
         locations = new LibraryFolderTree(track -> actions.play(List.of(track)));
+        listen(search, () -> { pageOffset = 0; invalidatePage(); locations.invalidateSearch(); count.setText("Searching…"); debounce.restart(); });
         locations.onContext((value, point) -> {
             JPopupMenu menu;
             if (value instanceof Path path) menu = menus.locationMenu(path);
@@ -167,7 +185,14 @@ public final class LibraryPanel extends JPanel {
         tabs.addTab("Locations", scroll(locations, true));
         tabs.addChangeListener(event -> refreshView());
         add(tabs, BorderLayout.CENTER);
-        add(count, BorderLayout.SOUTH);
+        previous.addActionListener(event -> requestPage(Math.max(0, pageOffset - GeneralLibraryPages.PAGE_SIZE)));
+        next.addActionListener(event -> requestPage(pageOffset + GeneralLibraryPages.PAGE_SIZE));
+        previous.setToolTipText("Previous library page · Alt+Page Up"); next.setToolTipText("Next library page · Alt+Page Down");
+        retry.addActionListener(event -> { if (entriesReady) requestPage(pageOffset); else reloadEntries(); });
+        paging.setOpaque(false); paging.add(previous); paging.add(next); paging.add(retry); retry.setVisible(false);
+        JPanel footer = new JPanel(new BorderLayout(0, 5)); footer.setOpaque(false); footer.add(count, BorderLayout.NORTH); footer.add(paging, BorderLayout.SOUTH); add(footer, BorderLayout.SOUTH);
+        bind(general, KeyStroke.getKeyStroke("alt PAGE_UP"), "previousPage", () -> { if (previous.isEnabled()) previous.doClick(); });
+        bind(general, KeyStroke.getKeyStroke("alt PAGE_DOWN"), "nextPage", () -> { if (next.isEnabled()) next.doClick(); });
         refreshView();
     }
 
@@ -177,86 +202,97 @@ public final class LibraryPanel extends JPanel {
     }
 
     void setCollections(LibraryCollections collections) {
+        if (this.collections.equals(collections)) return;
         this.collections = collections;
         if (folder != 0 && collections.folders().stream().noneMatch(item -> item.id() == folder)) folder = 0;
         reloadEntries();
     }
 
     LibraryCollections collections() { return collections; }
+    void selectSort(int index) { tabs.setSelectedIndex(0); sort.setSelectedIndex(index); }
     List<Track> tracks() { return catalog.tracks(); }
     long currentFolder() { return folder; }
 
     LibraryEntry entry(Key key) {
-        return entries.stream().filter(item -> item.key().equals(key)).findFirst().orElse(null);
+        return entries.entry(key);
     }
 
     JPopupMenu trackMenu(Track track) {
-        LibraryEntry row = entry(new Key(SONG, track.path().toString()));
-        return row == null ? menus.libraryMenu() : menus.entryMenu(row);
+        return menus.entryMenu(new LibraryEntry(new Key(SONG, track.path().toString()), track.title(), track.artist(), List.of(track), 0, 0, 0));
+    }
+
+    JPopupMenu menuForEntry(LibraryEntry entry) { return menus.entryMenu(entry); }
+
+    private void invalidatePage() {
+        pageGeneration++;
+        if (pageWorker != null) pageWorker.cancel(true);
+        LibraryEntry selected = general.getSelectedValue();
+        if (selected != null) restoreSelection = selected.key();
+        model.clear(); previous.setEnabled(false); next.setEnabled(false); retry.setVisible(false);
     }
 
     private void reloadEntries() {
+        if (closed) return;
+        invalidatePage(); entriesReady = false; count.setText("Updating library…");
         if (loader != null) loader.cancel(true);
         LibraryService.Catalog input = catalog;
         LibraryCollections organization = collections;
         loader = new SwingWorker<>() {
-            @Override protected List<LibraryEntry> doInBackground() { return LibraryEntry.build(input, organization); }
+            @Override protected GeneralLibraryPages.Index doInBackground() { return new GeneralLibraryPages.Index(LibraryEntry.build(input, organization), organization); }
             @Override protected void done() {
-                if (isCancelled() || loader != this) return;
+                if (closed || isCancelled() || loader != this) return;
                 try {
-                    entries = get();
-                    refreshView();
+                    entries = get(); entriesReady = true;
+                    updateView(pageOffset);
                     actions.entriesChanged();
-                } catch (java.util.concurrent.ExecutionException error) {
-                    System.getLogger(LibraryPanel.class.getName()).log(System.Logger.Level.WARNING,
-                        "Could not build General library", error.getCause());
-                } catch (InterruptedException error) {
-                    Thread.currentThread().interrupt();
+                } catch (Exception error) {
+                    count.setText("Library could not load. Retry to continue."); retry.setVisible(true);
                 }
             }
         };
         loader.execute();
     }
 
-    private void refreshView() {
-        String query = LibraryEntry.lower(search.getText().strip());
+    private void refreshView() { pageOffset = 0; updateView(0); }
+
+    private void updateView(int offset) {
+        if (closed) return;
+        debounce.stop();
         boolean local = tabs.getSelectedIndex() == 1;
-        back.setVisible(!local && folder != 0);
-        sort.setVisible(!local);
+        back.setVisible(!local && folder != 0); sort.setVisible(!local); category.setVisible(!local); paging.setVisible(!local);
         location.setText(local ? "On this computer" : folderName(folder));
-        count.setText(catalog.tracks().size() + " tracks" + (catalog.unavailable().isEmpty() ? ""
-            : " · " + catalog.unavailable().size() + " unavailable"));
+        count.setToolTipText(catalog.tracks().size() + " tracks · " + catalog.unavailable().size() + " unavailable");
         if (local) {
-            List<Track> tracks = query.isEmpty() ? catalog.tracks() : catalog.tracks().stream()
-                .filter(track -> LibraryEntry.lower(track + " " + track.album() + " " + track.path()).contains(query)).toList();
-            locations.setTracks(tracks, catalog.unavailable());
-            return;
-        }
-        Set<Key> pins = collections.pins();
-        Comparator<LibraryEntry> alphabetical = Comparator.comparing(LibraryEntry::name, String.CASE_INSENSITIVE_ORDER)
-            .thenComparing(item -> item.key().id());
-        Comparator<LibraryEntry> order = switch ((Order) sort.getSelectedItem()) {
-            case ALPHABETICAL -> alphabetical;
-            case PLAYED -> Comparator.comparingLong(LibraryEntry::plays).reversed().thenComparing(alphabetical);
-            case RECENT -> Comparator.comparingLong(LibraryEntry::recent).reversed().thenComparing(alphabetical);
-        };
-        Set<Path> members = collections.folders().stream().filter(item -> item.id() == folder)
-            .findFirst().map(item -> Set.copyOf(item.tracks())).orElse(Set.of());
-        LibraryEntry selected = general.getSelectedValue();
-        List<LibraryEntry> visible = entries.stream()
-            .filter(item -> folder == 0 ? !query.isEmpty() || item.parent() == 0 || pins.contains(item.key())
-                : (item.parent() == folder || item.kind() == SONG && members.contains(item.tracks().getFirst().path())))
-            .filter(item -> query.isEmpty() || LibraryEntry.lower(item.name() + " " + item.detail()
-                + " " + item.kind()).contains(query))
-            .sorted(Comparator.<LibraryEntry, Boolean>comparing(item -> !pins.contains(item.key())).thenComparing(order))
-            .toList();
-        model.clear();
-        model.addAll(visible);
-        if (selected != null) {
-            for (int i = 0; i < visible.size(); i++) {
-                if (visible.get(i).key().equals(selected.key())) { general.setSelectedIndex(i); break; }
+            invalidatePage(); count.setText("Loading locations…");
+            long generation = pageGeneration;
+            locations.setTracks(catalog.tracks(), catalog.unavailable(), search.getText(), matches -> {
+                if (!closed && generation == pageGeneration && tabs.getSelectedIndex() == 1) count.setText(matches + " matching tracks");
+            });
+        } else requestPage(offset);
+    }
+
+    private void requestPage(int offset) {
+        if (closed) return;
+        invalidatePage(); pageOffset = offset;
+        if (!entriesReady) { count.setText("Updating library…"); return; }
+        long generation = pageGeneration;
+        var request = new GeneralLibraryPages.Request(search.getText(), folder, (Order) sort.getSelectedItem(), offset, category.getSelectedIndex()==0?null:Kind.values()[category.getSelectedIndex()-1]);
+        GeneralLibraryPages.Index input = entries;
+        count.setText("Loading page…");
+        pageWorker = new SwingWorker<>() {
+            @Override protected GeneralLibraryPages.Page doInBackground() { return input.query(request); }
+            @Override protected void done() {
+                if (closed || isCancelled() || generation != pageGeneration) return;
+                try {
+                    var page = get(); pageOffset = page.offset(); model.addAll(page.entries());
+                    if (restoreSelection != null) for (int i = 0; i < model.size(); i++) if (model.get(i).key().equals(restoreSelection)) { general.setSelectedIndex(i); break; }
+                    long first = page.total() == 0 ? 0 : pageOffset + 1L;
+                    count.setText(first + "–" + (pageOffset + model.size()) + " of " + page.total() + " entries");
+                    previous.setEnabled(pageOffset > 0); next.setEnabled(page.hasNext());
+                    pageShown.run();
+                } catch (Exception error) { count.setText("Page could not load. Retry to continue."); retry.setVisible(true); }
             }
-        }
+        }; pageWorker.execute();
     }
 
     String folderName(long id) {
@@ -281,6 +317,7 @@ public final class LibraryPanel extends JPanel {
     }
 
     void close() {
+        closed = true; invalidatePage(); locations.close();
         debounce.stop();
         if (animation != null) animation.stop();
         if (loader != null) loader.cancel(true);
@@ -309,32 +346,45 @@ public final class LibraryPanel extends JPanel {
     private JScrollPane scroll(JComponent view, boolean horizontal) {
         JScrollPane pane = new JScrollPane(view, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
             horizontal ? ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED : ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-        pane.setBorder(BorderFactory.createLineBorder(Theme.DIVIDER));
+        pane.setBorder(UiFactory.roundedBorder(Theme.DIVIDER, 12));
+        UiFactory.styleScroll(pane);
         pane.getViewport().setBackground(Theme.SURFACE);
         return pane;
     }
 
+    private java.util.function.Consumer<Boolean> expansionChanged = ignored -> { };
+    void setExpansionListener(java.util.function.Consumer<Boolean> listener) { expansionChanged = listener; }
     private void setExpanded(boolean expanded) {
         this.expanded = expanded;
+        expansionChanged.accept(expanded);
         expand.setIcon(AppIcons.of(expanded ? AppIcons.Kind.COLLAPSE : AppIcons.Kind.EXPAND, 17, Theme.BLUE));
         expand.setToolTipText(expanded ? "Collapse library" : "Expand library");
         expand.getAccessibleContext().setAccessibleName(expand.getToolTipText());
-        int available = getParent() == null ? 900 : getParent().getWidth();
+        Container availableParent = getParent();
+        if (availableParent instanceof JSplitPane split && split.getOrientation() == JSplitPane.VERTICAL_SPLIT) availableParent = availableParent.getParent();
+        int available = availableParent == null ? 900 : availableParent.getWidth();
         int target = expanded ? Math.max(COMPACT_WIDTH, available - 32) : COMPACT_WIDTH;
+        animateWidth(target, () -> { });
+    }
+    private boolean railVisible = true;
+    boolean isRailRequestedVisible() { return railVisible; }
+    void setRailVisible(boolean visible) {
+        if (closed || visible == railVisible) return; Component rail = rail(); railVisible = visible;
+        if (visible) { boolean hidden = !rail.isVisible(); rail.setVisible(true); if (hidden) { rail.setSize(0,rail.getHeight()); setPreferredSize(new Dimension(0,0)); if (rail instanceof JComponent component) component.setPreferredSize(new Dimension(0,0)); } }
+        animateWidth(visible ? COMPACT_WIDTH : 0, () -> { if (!visible && !railVisible) { rail.setVisible(false); setPreferredSize(new Dimension(COMPACT_WIDTH,0)); if (rail instanceof JComponent component) component.setPreferredSize(null); } });
+    }
+    private Component rail() { return getParent() instanceof JSplitPane split && split.getOrientation()==JSplitPane.VERTICAL_SPLIT ? split : this; }
+    private void animateWidth(int target,Runnable complete) {
         if (animation != null) animation.stop();
-        animation = new Timer(15, event -> {
-            int width = getPreferredSize().width;
-            int distance = target - width;
-            if (Math.abs(distance) <= 6) {
-                setPreferredSize(new Dimension(target, 0));
-                ((Timer) event.getSource()).stop();
-            } else {
-                int step = Math.max(6, Math.abs(distance) / 5);
-                setPreferredSize(new Dimension(width + (distance > 0 ? step : -step), 0));
-            }
-            revalidate();
-        });
-        animation.start();
+        Component rail = rail(); int start = rail.getWidth(); if (!rail.isShowing() && getPreferredSize().width == 0) start=0;
+        if(start==target){setPreferredSize(new Dimension(target,0));complete.run();return;}
+        WidthTransition transition = new WidthTransition(Math.max(0,start),target,System.nanoTime(),220_000_000L);
+        animation = new Timer(16,event -> {
+            long now=System.nanoTime(); int width=transition.at(now);
+            setPreferredSize(new Dimension(width,0)); if (rail != this && rail instanceof JComponent component) component.setPreferredSize(new Dimension(width,0));
+            Container parent=rail.getParent(); if(parent!=null){parent.revalidate();parent.repaint();}
+            if (transition.finished(now)) { ((Timer)event.getSource()).stop(); if (rail != this && rail instanceof JComponent component) component.setPreferredSize(null); complete.run(); }
+        }); animation.setCoalesce(true); animation.start();
     }
 
     static void listen(JTextField field, Runnable change) {
@@ -353,6 +403,7 @@ public final class LibraryPanel extends JPanel {
     }
 
     private final class EntryRenderer extends JPanel implements ListCellRenderer<LibraryEntry> {
+        private final Icon pin = AppIcons.of(AppIcons.Kind.PIN, 15, Theme.BLUE);
         private final JLabel picture = new JLabel();
         private final JLabel title = new JLabel();
         private final JLabel subtitle = new JLabel();
@@ -392,11 +443,11 @@ public final class LibraryPanel extends JPanel {
                 case PLAYLIST -> "Playlist";
                 case FOLDER -> "Folder";
             };
-            title.setText((collections.pins().contains(entry.key()) ? "★  " : "") + entry.name());
+            title.setText(entry.name());
+            title.setIcon(collections.pins().contains(entry.key()) ? pin : null);
             subtitle.setText(kind + " · " + entry.detail());
-            Icon cover = artwork.forEntry(entry, catalog.unavailable(), list::repaint);
+            Icon cover = artwork.forEntry(entry, catalog.unavailable(), catalog.stamps(), list::repaint);
             picture.setIcon(cover == null ? fallback.get(entry.kind()) : cover);
-            setToolTipText(entry.name() + " · " + subtitle.getText());
             boolean dropTarget = list.getDropLocation() != null && list.getDropLocation().getIndex() == index;
             setBackground(dropTarget ? Theme.BLUE_STRONG.darker() : selected ? Theme.SURFACE_HOVER : Theme.SURFACE);
             return this;
@@ -418,9 +469,7 @@ public final class LibraryPanel extends JPanel {
             int index = ((JList.DropLocation) support.getDropLocation()).getIndex();
             if (index < 0 || index >= model.size()) return false;
             LibraryEntry destination = model.get(index);
-            if (destination.key().equals(dragged.key())) return false;
-            if (destination.kind() == FOLDER) return dragged.kind() != ARTIST;
-            return destination.kind() == PLAYLIST && dragged.kind() != FOLDER && !dragged.tracks().isEmpty();
+            return acceptsDrop(dragged, destination, collections);
         }
 
         @Override public boolean importData(TransferSupport support) {
@@ -431,5 +480,13 @@ public final class LibraryPanel extends JPanel {
         }
 
         @Override protected void exportDone(JComponent source, Transferable data, int action) { dragged = null; }
+    }
+
+    static boolean acceptsDrop(LibraryEntry source, LibraryEntry target, LibraryCollections collections) {
+        if (source.kind() == PLAYLIST && source.id() == Playlist.LIKED_ID) return false;
+        if (source == null || target == null || source.key().equals(target.key()) || source.kind() == ARTIST) return false;
+        if (target.kind() == FOLDER) return true;
+        return target.kind() == PLAYLIST && source.kind() != FOLDER && !source.tracks().isEmpty()
+            && collections.playlists().stream().anyMatch(playlist -> playlist.id() == target.id() && playlist.acceptsManualEdits());
     }
 }

@@ -19,6 +19,32 @@ import static org.junit.jupiter.api.Assertions.*;
 class LibraryScannerTest {
     @TempDir Path folder;
 
+    @Test void readsDistinctClassicalCreditsAndTechnicalPropertiesWithoutReplacingThePerformer() throws Exception {
+        Path file = folder.resolve("tagged.mp3");
+        try (var source = getClass().getResourceAsStream("/audio/proof.mp3")) { Files.copy(source, file); }
+        var audio = org.jaudiotagger.audio.AudioFileIO.read(file.toFile());
+        var tag = audio.getTag();
+        tag.setField(org.jaudiotagger.tag.FieldKey.TITLE, "Piano Sonata in A minor, Op. 27 No. 2: I. Allegro");
+        tag.setField(org.jaudiotagger.tag.FieldKey.GENRE, "Classical");
+        tag.setField(org.jaudiotagger.tag.FieldKey.COMPOSER, "Composer");
+        tag.setField(org.jaudiotagger.tag.FieldKey.CONDUCTOR, "Conductor");
+        tag.setField(org.jaudiotagger.tag.FieldKey.ORCHESTRA, "Orchestra");
+        tag.setField(org.jaudiotagger.tag.FieldKey.KEY, "G minor");
+        org.jaudiotagger.audio.AudioFileIO.write(audio);
+        var result = new LibraryScanner().scan(List.of(file), false, ignored -> { }, () -> false);
+        assertEquals(1, result.tracks().size(), result.errors().toString());
+        Track track = result.tracks().getFirst();
+        var data = track.metadata();
+        assertEquals("Composer", data.text(sangitam.desktop.model.TrackMetadata.Field.COMPOSER));
+        assertEquals("Conductor", data.text(sangitam.desktop.model.TrackMetadata.Field.CONDUCTOR));
+        assertEquals("Orchestra", data.text(sangitam.desktop.model.TrackMetadata.Field.ORCHESTRA));
+        assertEquals("G minor", data.text(sangitam.desktop.model.TrackMetadata.Field.KEY));
+        assertEquals("Sangitam", track.artist());
+        assertTrue(data.text(sangitam.desktop.model.TrackMetadata.Field.SOLOIST).isEmpty());
+        assertTrue(data.bitrateKbps() > 0); assertTrue(data.sampleRateHz() > 0);
+        assertEquals(1, data.extractionVersion());
+    }
+
     @Test void scansMp3AndWavRecursivelyAndSkipsBadFiles() throws Exception {
         Path mp3 = folder.resolve("proof.mp3");
         try (var source = getClass().getResourceAsStream("/audio/proof.mp3")) {

@@ -1,187 +1,178 @@
 package sangitam.desktop.ui;
 
 import sangitam.desktop.model.Track;
-
 import javax.swing.*;
-import javax.swing.tree.DefaultMutableTreeNode;
-import javax.swing.tree.DefaultTreeCellRenderer;
-import javax.swing.tree.DefaultTreeModel;
-import javax.swing.tree.TreePath;
-import javax.swing.tree.TreeSelectionModel;
-import java.awt.Component;
-import java.awt.Point;
-import java.awt.event.KeyEvent;
-import java.awt.event.MouseAdapter;
-import java.awt.event.MouseEvent;
+import javax.swing.event.*;
+import javax.swing.tree.*;
+import java.awt.*;
+import java.awt.event.*;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
+import java.util.*;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.function.Consumer;
-import java.util.function.BiConsumer;
+import java.util.function.*;
 
-/** A view of the paths already in the catalog, grouped by drive or filesystem root. */
+/** Lazy presentation of indexed paths. No directory listing or audio read runs in this tree. */
 final class LibraryFolderTree extends JTree {
-    private static final long serialVersionUID = 1L;
-    private static final Comparator<Path> FOLDER_ORDER = Comparator
-        .comparing(Path::toString, String.CASE_INSENSITIVE_ORDER).thenComparing(Path::toString);
-    private final DefaultTreeModel treeModel = new DefaultTreeModel(new DefaultMutableTreeNode());
+    private final DefaultTreeModel treeModel = new DefaultTreeModel(new DefaultMutableTreeNode("Imported folders"));
+    private final Map<Path, DefaultMutableTreeNode> nodes = new HashMap<>();
+    private final Map<Branch, SwingWorker<LocationIndex.Page, Void>> loads = new HashMap<>();
+    private final Set<Path> expandedFolders = new HashSet<>();
+    private final BiFunction<List<Track>, String, LocationIndex> build;
     private List<Track> tracks = List.of();
     private Set<Path> unavailable = Set.of();
-    private SwingWorker<FolderModel, Void> builder;
+    private String query = "";
+    private LocationIndex index;
+    private SwingWorker<LocationIndex, Void> builder;
+    private Path selection;
+    private long generation;
+    private boolean closed, changing;
+    private IntConsumer count = ignored -> { };
+    private static final class Branch extends DefaultMutableTreeNode {
+        final Path path;
+        boolean loaded;
+        Branch(Path path) { super(path == null ? "Imported folders" : path); this.path = path; add(new DefaultMutableTreeNode("Expand to load…", false)); }
+    }
+    private record PageAction(Branch branch, int offset, String label) { @Override public String toString() { return label; } }
+    private record RetryIndex() { @Override public String toString() { return "Could not load locations — Enter to retry"; } }
 
-    LibraryFolderTree(Consumer<Track> onPlay) {
-        setModel(treeModel);
-        setRootVisible(false);
-        setShowsRootHandles(true);
-        setRowHeight(29);
-        setLargeModel(true);
-        setBackground(Theme.SURFACE);
-        getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
-        getAccessibleContext().setAccessibleName("Library folders");
-        setCellRenderer(new FolderRenderer());
-        ToolTipManager.sharedInstance().registerComponent(this);
+    LibraryFolderTree(Consumer<Track> onPlay) { this(onPlay, LocationIndex::build); }
+    LibraryFolderTree(Consumer<Track> onPlay, BiFunction<List<Track>, String, LocationIndex> build) {
+        this.build = build;
+        setModel(treeModel); setRootVisible(false); setShowsRootHandles(true); setRowHeight(29); setLargeModel(true);
+        setBackground(Theme.SURFACE); getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
+        getAccessibleContext().setAccessibleName("Library folders"); setCellRenderer(new FolderRenderer()); ToolTipManager.sharedInstance().registerComponent(this);
+        addTreeWillExpandListener(new TreeWillExpandListener() {
+            public void treeWillExpand(TreeExpansionEvent event) { if (event.getPath().getLastPathComponent() instanceof Branch branch && !branch.loaded && !loads.containsKey(branch)) load(branch, -1); }
+            public void treeWillCollapse(TreeExpansionEvent event) { }
+        });
+        addTreeExpansionListener(new TreeExpansionListener() {
+            public void treeExpanded(TreeExpansionEvent event) { if (!changing && event.getPath().getLastPathComponent() instanceof Branch branch && branch.path != null) expandedFolders.add(branch.path); }
+            public void treeCollapsed(TreeExpansionEvent event) {
+                if (changing || closed || !(event.getPath().getLastPathComponent() instanceof Branch branch) || branch.path == null) return;
+                expandedFolders.remove(branch.path); changing = true;
+                try { forgetChildren(branch); branch.loaded = false; branch.add(new DefaultMutableTreeNode("Expand to load…", false)); treeModel.nodeStructureChanged(branch); }
+                finally { changing = false; }
+            }
+        });
         addMouseListener(new MouseAdapter() {
             @Override public void mouseClicked(MouseEvent event) {
-                if (event.getClickCount() != 2 || !SwingUtilities.isLeftMouseButton(event)) return;
-                Track track = trackAt(getPathForLocation(event.getX(), event.getY()));
-                if (track != null) onPlay.accept(track);
+                if (!SwingUtilities.isLeftMouseButton(event) || event.getClickCount() != 2) return;
+                TreePath path = getPathForLocation(event.getX(), event.getY()); if (path != null) activate(path, onPlay, false);
             }
         });
-        getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "openLibraryRow");
-        getActionMap().put("openLibraryRow", new AbstractAction() {
-            @Override public void actionPerformed(java.awt.event.ActionEvent event) {
-                Track track = selectedTrack();
-                if (track != null) onPlay.accept(track);
-                else if (getSelectionPath() != null) {
-                    TreePath selection = getSelectionPath();
-                    if (isExpanded(selection)) collapsePath(selection);
-                    else expandPath(selection);
-                }
-            }
-        });
+        LibraryPanel.bind(this, KeyStroke.getKeyStroke("ENTER"), "openLibraryRow", () -> activate(getSelectionPath(), onPlay, true));
     }
-
-    void setTracks(List<Track> updated, Set<Path> unavailable) {
-        this.unavailable = unavailable;
-        repaint();
-        if (updated.equals(tracks)) return;
-        tracks = updated;
-        if (builder != null) builder.cancel(true);
+    private void activate(TreePath path, Consumer<Track> onPlay, boolean toggleFolder) {
+        if (path == null || closed) return; Object value = nodeValue(path);
+        if (value instanceof Track track) onPlay.accept(track);
+        else if (value instanceof PageAction action) load(action.branch(), action.offset());
+        else if (value instanceof RetryIndex) rebuild();
+        else if (toggleFolder && value instanceof Path) { if (isExpanded(path)) collapsePath(path); else expandPath(path); }
+    }
+    void setTracks(List<Track> updated, Set<Path> unavailable) { setTracks(updated, unavailable, "", ignored -> { }); }
+    void setTracks(List<Track> updated, Set<Path> unavailable, String query, IntConsumer count) {
+        this.unavailable = unavailable; this.count = count; repaint();
+        String normalized = LibraryEntry.lower(query.strip());
+        if (updated == tracks && normalized.equals(this.query) && index != null) { count.accept(index.matches()); return; }
+        Object selected = getSelectionPath() == null ? null : nodeValue(getSelectionPath());
+        if (selected instanceof Track track) selection = track.path();
+        else if (selected instanceof Path path) selection = path;
+        else if (index != null) selection = null;
+        tracks = updated; this.query = normalized; rebuild();
+    }
+    void invalidateSearch() {
+        if (closed) return;
+        Object selected = getSelectionPath() == null ? null : nodeValue(getSelectionPath());
+        if (selected instanceof Track track) selection = track.path(); else if (selected instanceof Path path) selection = path;
+        generation++; index = null; if (builder != null) builder.cancel(true);
+        loads.values().forEach(worker -> worker.cancel(true)); loads.clear(); nodes.clear();
+        changing = true;
+        try { var root = new DefaultMutableTreeNode("Imported folders"); root.add(new DefaultMutableTreeNode("Waiting for search…", false)); treeModel.setRoot(root); }
+        finally { changing = false; }
+    }
+    private void rebuild() {
+        if (closed) return; long request = ++generation;
+        if (builder != null) builder.cancel(true); loads.values().forEach(worker -> worker.cancel(true)); loads.clear(); nodes.clear(); index = null;
+        changing = true;
+        try { DefaultMutableTreeNode root = new DefaultMutableTreeNode("Imported folders"); root.add(new DefaultMutableTreeNode("Loading locations…", false)); treeModel.setRoot(root); }
+        finally { changing = false; }
+        List<Track> input = tracks; String text = query;
         builder = new SwingWorker<>() {
-            @Override protected FolderModel doInBackground() {
-                return buildModel(updated);
-            }
-
+            @Override protected LocationIndex doInBackground() { return build.apply(input, text); }
             @Override protected void done() {
-                if (isCancelled() || builder != this) return;
+                if (closed || isCancelled() || generation != request) return;
                 try {
-                    replaceTree(get());
-                } catch (java.util.concurrent.ExecutionException error) {
-                    System.getLogger(LibraryFolderTree.class.getName()).log(
-                        System.Logger.Level.WARNING, "Could not build the library folder tree", error.getCause());
-                } catch (InterruptedException error) {
-                    Thread.currentThread().interrupt();
+                    index = get(); count.accept(index.matches()); Branch root = new Branch(null);
+                    changing = true; try { treeModel.setRoot(root); } finally { changing = false; }
+                    load(root, -1);
+                } catch (Exception error) {
+                    DefaultMutableTreeNode root = new DefaultMutableTreeNode("Imported folders"); root.add(new DefaultMutableTreeNode(new RetryIndex(), false)); treeModel.setRoot(root);
                 }
             }
-        };
-        builder.execute();
+        }; builder.execute();
     }
-
-    Track selectedTrack() { return trackAt(getSelectionPath()); }
-
+    private void forgetChildren(Branch branch) {
+        var enumeration = branch.depthFirstEnumeration();
+        while (enumeration.hasMoreElements()) {
+            var child = (DefaultMutableTreeNode) enumeration.nextElement(); if (child == branch) continue;
+            Object value = child.getUserObject(); Path key = value instanceof Track track ? track.path() : value instanceof Path path ? path : null;
+            if (key != null) nodes.remove(key, child);
+            if (child instanceof Branch nested) { var work = loads.remove(nested); if (work != null) work.cancel(true); }
+        }
+        var own = loads.remove(branch); if (own != null) own.cancel(true); branch.removeAllChildren();
+    }
+    private void load(Branch branch, int offset) {
+        if (closed || index == null) return; long request = generation; LocationIndex input = index; Path selectedPath = selection;
+        changing = true;
+        try { forgetChildren(branch); branch.loaded = false; branch.add(new DefaultMutableTreeNode("Loading…", false)); treeModel.nodeStructureChanged(branch); }
+        finally { changing = false; }
+        SwingWorker<LocationIndex.Page, Void> worker = new SwingWorker<>() {
+            @Override protected LocationIndex.Page doInBackground() { return input.page(branch.path, offset < 0 && selectedPath != null ? input.offsetToward(branch.path, selectedPath) : Math.max(0, offset)); }
+            @Override protected void done() {
+                if (closed || isCancelled() || request != generation || loads.get(branch) != this) return;
+                loads.remove(branch);
+                changing = true;
+                try {
+                    LocationIndex.Page page = get(); branch.removeAllChildren(); branch.loaded = true;
+                    if (page.offset() > 0) branch.add(new DefaultMutableTreeNode(new PageAction(branch, Math.max(0, page.offset() - LocationIndex.PAGE_SIZE), "‹ Previous 100 entries"), false));
+                    for (Object value : page.children()) {
+                        DefaultMutableTreeNode child = value instanceof Path folder ? new Branch(folder) : new DefaultMutableTreeNode(value, false);
+                        branch.add(child); nodes.put(value instanceof Path folder ? folder : ((Track) value).path(), child);
+                    }
+                    if (page.hasNext()) branch.add(new DefaultMutableTreeNode(new PageAction(branch, page.offset() + LocationIndex.PAGE_SIZE, "Next 100 entries › (" + (page.total() - page.offset() - page.children().size()) + " remaining)"), false));
+                    if (branch.path == null && page.total() == 0) branch.add(new DefaultMutableTreeNode("No matching tracks", false));
+                    treeModel.nodeStructureChanged(branch);
+                } catch (Exception error) {
+                    branch.removeAllChildren(); branch.loaded = true; branch.add(new DefaultMutableTreeNode(new PageAction(branch, offset, "Could not load entries — Enter to retry"), false)); treeModel.nodeStructureChanged(branch);
+                } finally { changing = false; }
+                expandPath(new TreePath(branch.getPath()));
+                var children = branch.children();
+                while (children.hasMoreElements()) {
+                    var child = children.nextElement(); if (!(child instanceof Branch folder)) continue;
+                    if ((branch.path == null && branch.getChildCount() == 1) || expandedFolders.contains(folder.path) || selection != null && selection.startsWith(folder.path)) expandPath(new TreePath(folder.getPath()));
+                }
+                DefaultMutableTreeNode selected = nodes.get(selection); if (selected != null) setSelectionPath(new TreePath(selected.getPath()));
+            }
+        }; loads.put(branch, worker); worker.execute();
+    }
+    Track selectedTrack() { return getSelectionPath() != null && nodeValue(getSelectionPath()) instanceof Track track ? track : null; }
     void onContext(BiConsumer<Object, Point> show) {
         addMouseListener(new MouseAdapter() {
-            @Override public void mousePressed(MouseEvent event) { popup(event); }
-            @Override public void mouseReleased(MouseEvent event) { popup(event); }
-
             private void popup(MouseEvent event) {
-                if (!event.isPopupTrigger()) return;
-                TreePath path = getPathForLocation(event.getX(), event.getY());
-                if (path != null) setSelectionPath(path);
-                show.accept(path == null ? null : nodeValue(path), event.getPoint());
+                if (!event.isPopupTrigger()) return; TreePath path = getPathForLocation(event.getX(), event.getY()); Object value = path == null ? null : nodeValue(path);
+                if (value != null && !(value instanceof Path) && !(value instanceof Track)) return;
+                if (path != null) setSelectionPath(path); show.accept(value, event.getPoint());
             }
+            @Override public void mousePressed(MouseEvent event) { popup(event); } @Override public void mouseReleased(MouseEvent event) { popup(event); }
         });
-        LibraryPanel.bind(this, KeyStroke.getKeyStroke(KeyEvent.VK_F10, KeyEvent.SHIFT_DOWN_MASK), "context", () -> {
-            TreePath path = getSelectionPath();
-            var bounds = path == null ? null : getPathBounds(path);
-            show.accept(path == null ? null : nodeValue(path),
-                bounds == null ? new Point(12, 12) : new Point(bounds.x, bounds.y + bounds.height));
+        LibraryPanel.bind(this, KeyStroke.getKeyStroke("shift F10"), "context", () -> {
+            TreePath path = getSelectionPath(); Object value = path == null ? null : nodeValue(path);
+            if (value != null && !(value instanceof Path) && !(value instanceof Track)) return;
+            Rectangle bounds = path == null ? null : getPathBounds(path); show.accept(value, bounds == null ? new Point(12,12) : new Point(bounds.x, bounds.y + bounds.height));
         });
     }
-
-    private static Track trackAt(TreePath path) {
-        return path != null && nodeValue(path) instanceof Track track ? track : null;
-    }
-
-    private static Object nodeValue(TreePath path) {
-        return ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
-    }
-
-    record FolderModel(DefaultMutableTreeNode root, Map<Path, DefaultMutableTreeNode> nodes) { }
-
-    static FolderModel buildModel(List<Track> tracks) {
-        DefaultMutableTreeNode root = new DefaultMutableTreeNode("Imported folders");
-        Map<Path, DefaultMutableTreeNode> nodes = new HashMap<>();
-        List<Path> folders = tracks.stream().map(track -> track.path().getParent()).distinct()
-            .sorted(FOLDER_ORDER).toList();
-        Map<Path, Path> commonFolders = new HashMap<>();
-        for (Path folder : folders) commonFolders.merge(folder.getRoot(), folder, LibraryFolderTree::commonParent);
-        for (Path folder : folders) addFolder(folder, commonFolders.get(folder.getRoot()), root, nodes);
-        for (Track track : tracks) {
-            DefaultMutableTreeNode node = new DefaultMutableTreeNode(track, false);
-            nodes.get(track.path().getParent()).add(node);
-            nodes.put(track.path(), node);
-        }
-        return new FolderModel(root, nodes);
-    }
-
-    private static Path commonParent(Path left, Path right) {
-        while (!right.startsWith(left)) left = left.getParent();
-        return left;
-    }
-
-    private static void addFolder(Path path, Path top, DefaultMutableTreeNode root,
-                                  Map<Path, DefaultMutableTreeNode> nodes) {
-        if (nodes.containsKey(path)) return;
-        Path parent = path.equals(top) ? null : path.getParent();
-        if (parent != null) addFolder(parent, top, root, nodes);
-        DefaultMutableTreeNode node = new DefaultMutableTreeNode(path);
-        (parent == null ? root : nodes.get(parent)).add(node);
-        nodes.put(path, node);
-    }
-
-    private void replaceTree(FolderModel model) {
-        TreePath rootPath = new TreePath(treeModel.getRoot());
-        var expanded = getExpandedDescendants(rootPath);
-        List<Path> folders = new ArrayList<>();
-        if (expanded != null) {
-            while (expanded.hasMoreElements()) {
-                if (nodeValue(expanded.nextElement()) instanceof Path path) folders.add(path);
-            }
-        }
-        Object selected = getSelectionPath() == null ? null : nodeValue(getSelectionPath());
-        boolean firstLoad = treeModel.getChildCount(treeModel.getRoot()) == 0;
-        treeModel.setRoot(model.root());
-        if (firstLoad) {
-            DefaultMutableTreeNode folder = model.root();
-            while (folder.getChildCount() == 1 && folder.getFirstChild() instanceof DefaultMutableTreeNode child
-                   && child.getUserObject() instanceof Path) {
-                expandPath(new TreePath(child.getPath()));
-                folder = child;
-            }
-        }
-        for (Path path : folders) {
-            DefaultMutableTreeNode node = model.nodes().get(path);
-            if (node != null) expandPath(new TreePath(node.getPath()));
-        }
-        Path selectionKey = selected instanceof Track track ? track.path() : selected instanceof Path path ? path : null;
-        DefaultMutableTreeNode selection = model.nodes().get(selectionKey);
-        if (selection != null) setSelectionPath(new TreePath(selection.getPath()));
-    }
+    private static Object nodeValue(TreePath path) { return ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject(); }
+    void close() { closed = true; generation++; if (builder != null) builder.cancel(true); loads.values().forEach(worker -> worker.cancel(true)); loads.clear(); nodes.clear(); }
 
     private final class FolderRenderer extends DefaultTreeCellRenderer {
         private static final long serialVersionUID = 1L;
@@ -218,6 +209,9 @@ final class LibraryFolderTree extends JTree {
                 setIcon(musicIcon);
                 setFont(Theme.BODY);
                 setToolTipText(track.path().toString());
+            } else {
+                setText(item.toString()); setIcon(AppIcons.of(item instanceof PageAction ? AppIcons.Kind.NEXT : AppIcons.Kind.HELP, 16, Theme.BLUE));
+                setFont(Theme.SMALL); setForeground(Theme.BLUE);
             }
             return this;
         }

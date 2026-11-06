@@ -3,6 +3,7 @@ package sangitam.desktop.ui;
 import sangitam.desktop.model.LibraryCollections.Folder;
 import sangitam.desktop.model.Playlist;
 import sangitam.desktop.model.Track;
+import sangitam.desktop.model.SmartPlaylistRule;
 
 import javax.swing.*;
 import javax.swing.event.MenuEvent;
@@ -31,6 +32,7 @@ final class LibraryMenus {
         JPopupMenu menu = new JPopupMenu();
         menu.add(item("Import music…", () -> actions.importMusic(panel.currentFolder())));
         menu.add(item("Create playlist…", () -> createPlaylist(panel.currentFolder(), List.of())));
+        menu.add(item("Create smart playlist…", () -> editSmartPlaylist(null, panel.currentFolder())));
         menu.add(item("Create folder…", () -> createFolder(panel.currentFolder())));
         return menu;
     }
@@ -61,8 +63,17 @@ final class LibraryMenus {
         switch (entry.kind()) {
             case SONG, ALBUM, ARTIST -> {
                 menu.add(addToPlaylist(entry, "Add to playlist"));
+                JMenu taste = new JMenu("Taste profile");
+                String[] labels = {"Avoid in automatic sessions", "Less like this", "Neutral / reset", "More like this", "Love / favour"};
+                Integer selected = actions.tasteRating(entry.tracks()); ButtonGroup ratings = new ButtonGroup();
+                for (int i=0;i<labels.length;i++) {
+                    int rating=i-2; var item = new JRadioButtonMenuItem(labels[i], selected != null && selected == rating);
+                    item.addActionListener(event -> actions.taste(entry.tracks(),rating)); ratings.add(item); taste.add(item);
+                }
+                menu.add(taste);
                 if (entry.kind() != ARTIST) menu.add(item("Edit details…",
                     () -> actions.editDetails(entry.tracks(), entry.kind() == ALBUM)));
+                if (entry.kind() != ARTIST) menu.add(playable("Restore file details…", entry, () -> actions.restoreDetails(entry.tracks())));
                 menu.add(playable("Add to queue", entry, () -> actions.queue(entry.tracks())));
                 if (entry.kind() != ARTIST) {
                     menu.addSeparator();
@@ -74,9 +85,22 @@ final class LibraryMenus {
                 }
             }
             case PLAYLIST -> {
-                menu.add(item("Add songs…", () -> chooseSongs(paths -> addToPlaylist(entry.id(), paths))));
+                Playlist playlist = panel.collections().playlists().stream().filter(value -> value.id() == entry.id()).findFirst().orElse(null);
+                if (playlist != null && playlist.likedSongs()) {
+                    menu.add(addToPlaylist(entry, "Copy songs to playlist"));
+                    menu.add(playable("Add to queue", entry, () -> actions.queue(entry.tracks())));
+                    break;
+                }
+                boolean smart = playlist != null && playlist.smart();
+                if (smart) {
+                    menu.add(item("Edit rules…", () -> editSmartPlaylist(playlist, playlist.folderId())));
+                    menu.add(item("Refresh matches", () -> actions.organize("Smart playlist refreshed", ignored -> { })));
+                    menu.add(item("Save as regular playlist…", () -> createPlaylist(playlist.folderId(), entry.paths())));
+                } else menu.add(item("Add songs…", () -> chooseSongs(paths -> addToPlaylist(entry.id(), paths))));
                 menu.add(addToPlaylist(entry, "Add to other playlist"));
-                menu.add(item("Edit details…", () -> editPlaylist(entry)));
+                menu.add(item("Edit details…", () -> {
+                    if (smart) editSmartPlaylist(playlist, playlist.folderId()); else editPlaylist(entry);
+                }));
                 menu.add(playable("Add to queue", entry, () -> actions.queue(entry.tracks())));
                 menu.add(item("Move to folder…", () -> move(entry)));
                 menu.addSeparator();
@@ -89,6 +113,7 @@ final class LibraryMenus {
                 menu.add(addToPlaylist(entry, "Add to playlist"));
                 JMenu create = new JMenu("Create");
                 create.add(item("Playlist…", () -> createPlaylist(entry.id(), List.of())));
+                create.add(item("Smart playlist…", () -> editSmartPlaylist(null, entry.id())));
                 create.add(item("Folder…", () -> createFolder(entry.id())));
                 menu.add(create);
                 menu.add(item("Import music…", () -> actions.importMusic(entry.id())));
@@ -105,7 +130,9 @@ final class LibraryMenus {
         if (entry.kind() != ARTIST) {
             menu.addSeparator();
             boolean pinned = panel.collections().pins().contains(entry.key());
-            menu.add(item(pinned ? "Unpin" : "Pin to library", () -> actions.organize(
+            String label = entry.kind() == SONG ? (pinned ? "Unlike song" : "Like song · add to Liked Songs")
+                : (pinned ? "Unpin" : "Pin to library");
+            menu.add(item(label, () -> actions.organize(
                 pinned ? "Unpinned" : "Pinned to library", store -> store.setPinned(entry.key(), !pinned))));
         }
         return menu;
@@ -121,7 +148,7 @@ final class LibraryMenus {
         long folder = panel.currentFolder();
         menu.add(item("+ Create a new playlist…", () -> createPlaylist(folder, paths)));
         List<Playlist> choices = panel.collections().playlists().stream()
-            .filter(playlist -> playlist.id() != sourcePlaylist).toList();
+            .filter(playlist -> playlist.id() != sourcePlaylist && playlist.acceptsManualEdits()).toList();
         JMenu existing = new JMenu("Add to existing playlist");
         existing.setEnabled(!choices.isEmpty());
         existing.getPopupMenu().setFocusable(true);
@@ -189,6 +216,25 @@ final class LibraryMenus {
     private void createFolder(long parent) {
         String name = name("Create folder");
         if (name != null) actions.organize("Folder created", store -> store.createFolder(name, parent));
+    }
+
+    private void editSmartPlaylist(Playlist playlist, long folder) {
+        try (var editor = new SmartPlaylistPanel(playlist == null ? "" : playlist.name(),
+            playlist == null ? "" : playlist.description(), playlist == null ? SmartPlaylistRule.defaults() : playlist.rule(), actions::previewSmart)) {
+            while (JOptionPane.showConfirmDialog(panel, editor, playlist == null ? "Create smart playlist" : "Edit smart playlist",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE) == JOptionPane.OK_OPTION) {
+                try {
+                    String name = editor.playlistName(); String description = editor.description(); SmartPlaylistRule rule = editor.rule();
+                    actions.organize("Smart playlist saved", store -> {
+                        if (playlist == null) store.createSmartPlaylist(name, description, folder, rule);
+                        else store.editSmartPlaylist(playlist.id(), name, description, rule);
+                    });
+                    return;
+                } catch (IllegalArgumentException error) {
+                    JOptionPane.showMessageDialog(panel, error.getMessage(), "Check playlist rules", JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        }
     }
 
     private void editPlaylist(LibraryEntry entry) {
@@ -266,6 +312,7 @@ final class LibraryMenus {
     }
 
     void drop(LibraryEntry source, LibraryEntry target) {
+        if (!LibraryPanel.acceptsDrop(source, target, panel.collections())) return;
         if (target.kind() == PLAYLIST) {
             addToPlaylist(target.id(), source.paths());
             return;

@@ -36,5 +36,24 @@ public final class PlaybackMemoryService implements AutoCloseable {
         });
     }
 
+    public void loadVolume(Consumer<Double> ready) {
+        worker.execute(() -> {
+            try {
+                double volume; synchronized (store) { store.initialize(); volume = store.loadVolume(); }
+                SwingUtilities.invokeLater(() -> { if (!closed) ready.accept(volume); });
+            } catch (Exception ignored) { }
+        });
+    }
+    public void saveVolume(double volume) {
+        if (!closed) worker.execute(() -> { try { synchronized (store) { store.saveVolume(volume); } } catch (Exception ignored) { } });
+    }
+    public void saveListening(java.util.Map<java.nio.file.Path, Double> seconds) {
+        if (closed || seconds.isEmpty()) return;
+        worker.execute(() -> { try { synchronized (store) { var artists = new ArtistStore(store); artists.initialize(); artists.addListening(seconds); } } catch (Exception ignored) { } });
+    }
+    public void afterPending(Runnable ready) {
+        if (!closed) worker.execute(() -> SwingUtilities.invokeLater(() -> { if (!closed) ready.run(); }));
+    }
+
     @Override public void close() { closed = true; worker.shutdown(); }
 }

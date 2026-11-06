@@ -15,17 +15,27 @@ public final class UiFactory {
     }
 
     public static JButton button(String text, Icon icon, boolean primary) {
-        JButton button = new JButton(text, icon);
+        JButton button = new JButton(text, icon) {
+            @Override protected void paintComponent(Graphics graphics) {
+                Graphics2D g = (Graphics2D) graphics.create();
+                g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g.setColor(getModel().isPressed() ? getBackground().darker() : getBackground());
+                g.fillRoundRect(0, 0, getWidth(), getHeight(), 10, 10);
+                g.dispose();
+                super.paintComponent(graphics);
+            }
+        };
         button.setFont(Theme.BODY_BOLD);
         button.setForeground(primary ? Theme.BLACK : Theme.TEXT);
         button.setBackground(primary ? Theme.BLUE : Theme.SURFACE_RAISED);
         Border idleBorder = BorderFactory.createCompoundBorder(
-            BorderFactory.createLineBorder(new Color(0, 0, 0, 0)), Theme.padding(8, 13, 8, 13));
+            roundedBorder(new Color(0, 0, 0, 0), 10), Theme.padding(8, 13, 8, 13));
         Border focusBorder = BorderFactory.createCompoundBorder(
-            BorderFactory.createLineBorder(Theme.BLUE), Theme.padding(8, 13, 8, 13));
+            roundedBorder(Theme.BLUE, 10), Theme.padding(8, 13, 8, 13));
         button.setBorder(idleBorder);
         button.setFocusPainted(false);
-        button.setOpaque(true);
+        button.setOpaque(false);
+        button.setContentAreaFilled(false);
         button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         Color normal = button.getBackground();
         Color hover = primary ? Theme.BLUE.brighter() : Theme.SURFACE_HOVER;
@@ -62,6 +72,17 @@ public final class UiFactory {
 
     public static Border roundedBorder(Color color, int radius) {
         return new RoundedBorder(color, radius);
+    }
+
+    static Border inputBorder() {
+        return BorderFactory.createCompoundBorder(roundedBorder(Theme.DIVIDER, 8), Theme.padding(5, 8, 5, 8));
+    }
+
+    public static void styleScroll(JScrollPane scroll) {
+        for (JScrollBar bar : new JScrollBar[]{scroll.getHorizontalScrollBar(), scroll.getVerticalScrollBar()}) {
+            bar.setUnitIncrement(18);
+            if (!(bar.getUI() instanceof RoundScrollBarUI)) bar.setUI(new RoundScrollBarUI());
+        }
     }
 
     private static final class RoundedBorder extends AbstractBorder {

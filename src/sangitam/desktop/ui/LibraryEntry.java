@@ -28,7 +28,9 @@ record LibraryEntry(Key key, String name, String detail, List<Track> tracks, lon
         var byPath = new HashMap<Path, Track>();
         var albums = new LinkedHashMap<String, List<Track>>();
         var artists = new LinkedHashMap<String, List<Track>>();
+        var artistNames = new HashMap<String,String>();
         for (Track track : catalog.tracks()) {
+            if (Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException();
             byPath.put(track.path(), track);
             String detail = track.artist() + (catalog.unavailable().contains(track.path()) ? " · Unavailable" : "");
             rows.add(entry(catalog, Kind.SONG, track.path().toString(), track.title(), detail, List.of(track), 0, 0));
@@ -36,23 +38,26 @@ record LibraryEntry(Key key, String name, String detail, List<Track> tracks, lon
                 String key = lower(track.album()) + "\u001f" + lower(track.artist());
                 albums.computeIfAbsent(key, ignored -> new ArrayList<>()).add(track);
             }
-            if (!track.artist().equalsIgnoreCase("Unknown artist")) {
-                artists.computeIfAbsent(lower(track.artist()), ignored -> new ArrayList<>()).add(track);
+            for(var credit:sangitam.desktop.model.ArtistCredits.of(track)) {
+                String key=sangitam.desktop.model.ArtistCredits.key(credit.name()); artistNames.putIfAbsent(key,credit.name()); artists.computeIfAbsent(key,ignored->new ArrayList<>()).add(track);
             }
         }
         albums.forEach((key, tracks) -> rows.add(entry(catalog, Kind.ALBUM, key, tracks.getFirst().album(),
             tracks.getFirst().artist(), tracks, 0, 0)));
-        artists.forEach((key, tracks) -> rows.add(entry(catalog, Kind.ARTIST, key, tracks.getFirst().artist(),
+        artists.forEach((key, tracks) -> rows.add(entry(catalog, Kind.ARTIST, key, artistNames.get(key),
             tracks.size() + " tracks", tracks, 0, 0)));
         Map<Long, LinkedHashSet<Track>> members = new HashMap<>();
         Map<Long, List<Folder>> children = new HashMap<>();
         for (Folder folder : collections.folders()) {
+            if (Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException();
             members.put(folder.id(), new LinkedHashSet<>(resolve(folder.tracks(), byPath)));
             children.computeIfAbsent(folder.parentId(), ignored -> new ArrayList<>()).add(folder);
         }
         for (Playlist playlist : collections.playlists()) {
+            if (Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException();
             List<Track> tracks = resolve(playlist.tracks(), byPath);
             String detail = playlist.description().isBlank() ? tracks.size() + " tracks" : playlist.description();
+            if (playlist.smart()) detail = "Smart · " + tracks.size() + " tracks" + (playlist.description().isBlank() ? "" : " · " + playlist.description());
             rows.add(entry(catalog, Kind.PLAYLIST, Long.toString(playlist.id()), playlist.name(), detail,
                 tracks, playlist.folderId(), playlist.updatedAt()));
             var folder = members.get(playlist.folderId());
@@ -70,6 +75,7 @@ record LibraryEntry(Key key, String name, String detail, List<Track> tracks, lon
         Map<Long, LinkedHashSet<Track>> members, LibraryService.Catalog catalog, List<LibraryEntry> rows) {
         var result = members.getOrDefault(parent, new LinkedHashSet<>());
         for (Folder child : children.getOrDefault(parent, List.of())) {
+            if (Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException();
             var tracks = addFolders(child.id(), children, members, catalog, rows);
             rows.add(entry(catalog, Kind.FOLDER, Long.toString(child.id()), child.name(), tracks.size() + " tracks",
                 List.copyOf(tracks), parent, child.updatedAt()));

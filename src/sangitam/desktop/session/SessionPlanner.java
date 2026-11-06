@@ -15,11 +15,15 @@ import java.util.Set;
 /** Deterministic, explainable song selection. It uses measured traits and supplied genre tags, not AI mood guesses. */
 public final class SessionPlanner {
     public enum Intent { FOCUS, EXPLORE, UNWIND }
-    public record Request(Intent intent, int energy, int minutes, boolean familiarFirst) {
+    public enum Mood { AUTO, HAPPY, SAD, CALM, TENSE, ENERGETIC, BALANCED }
+    public record Request(Intent intent, int energy, int minutes, boolean familiarFirst, Mood mood, int endEnergy, boolean useContext) {
         public Request {
             energy = Math.max(0, Math.min(100, energy));
-            minutes = Math.max(1, minutes);
+            minutes = Math.max(1, Math.min(240,minutes));
+            endEnergy = Math.max(0,Math.min(100,endEnergy));
+            java.util.Objects.requireNonNull(intent); java.util.Objects.requireNonNull(mood);
         }
+        public Request(Intent intent,int energy,int minutes,boolean familiarFirst){this(intent,energy,minutes,familiarFirst,Mood.BALANCED,energy,false);}
     }
     public record Choice(Track track, String reason) { }
     public record Plan(List<Choice> choices, int requestedMinutes, int estimatedSeconds) {
@@ -28,6 +32,13 @@ public final class SessionPlanner {
 
     public Plan build(Request request, List<Track> tracks, Map<Path, TrackTags> tags,
                       Map<Path, Integer> playCounts) {
+        return build(request,tracks,tags,playCounts,new SessionContext(java.time.ZonedDateTime.now(),Map.of(),List.of()));
+    }
+    public Plan build(Request request,List<Track> tracks,Map<Path,TrackTags> tags,Map<Path,Integer> playCounts,SessionContext context) {
+        tracks = tracks.stream().filter(track -> context.taste().getOrDefault(track.path(),0) > -2).distinct().toList();
+        var affinity = context.affinities(tracks); var hint = context.hint(tags);
+        int startEnergy = request.useContext() && request.mood()==Mood.AUTO ? hint.energy() : request.energy();
+        int targetValence = switch(request.mood()) { case HAPPY -> 78; case SAD,TENSE -> 25; case AUTO -> request.useContext()?hint.valence():50; default -> 50; };
         List<Choice> chosen = new ArrayList<>();
         Set<Path> used = new HashSet<>();
         Set<String> artists = new HashSet<>();
@@ -37,12 +48,16 @@ public final class SessionPlanner {
 
         while (used.size() < tracks.size() && total < target * 0.95) {
             int remaining = target - total;
+            if (Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException();
+            int targetEnergy = (int)Math.round(startEnergy+(request.endEnergy()-startEnergy)*Math.min(1,total/(double)target));
+            Request step = new Request(request.intent(),targetEnergy,request.minutes(),request.familiarFirst());
             Track best = tracks.stream()
                 .filter(track -> !used.contains(track.path()))
                 .filter(track -> duration(track) <= remaining + Math.max(75, target / 12))
-                .max(Comparator.comparingInt((Track track) -> score(request, track,
+                .max(Comparator.comparingInt((Track track) -> score(step, track,
                     tags.getOrDefault(track.path(), TrackTags.pending()),
-                    playCounts.getOrDefault(track.path(), 0), artists, genres))
+                    playCounts.getOrDefault(track.path(), 0), artists, genres) + (int)Math.round(affinity.getOrDefault(track.path(),0d))
+                    - (tags.getOrDefault(track.path(),TrackTags.pending()).features().version()>0 ? Math.abs(tags.get(track.path()).features().valence()-targetValence)/3 : 0))
                     .thenComparing(track -> track.title().toLowerCase(Locale.ROOT), Comparator.reverseOrder()))
                 .orElse(null);
             if (best == null) {
@@ -60,7 +75,10 @@ public final class SessionPlanner {
             }
             TrackTags profile = tags.getOrDefault(best.path(), TrackTags.pending());
             chosen.add(new Choice(best, explain(request, best, profile,
-                playCounts.getOrDefault(best.path(), 0))));
+                playCounts.getOrDefault(best.path(), 0)) + (request.useContext() ? " · " + hint.explanation() : "")
+                + " · taste " + context.taste().getOrDefault(best.path(),0) + " · target energy " + targetEnergy
+                + (profile.features().version()>0 ? " · " + profile.features().summary() : " · deeper analysis pending")));
+
             used.add(best.path());
             artists.add(best.artist().toLowerCase(Locale.ROOT));
             genres.add(best.genre().toLowerCase(Locale.ROOT));
@@ -84,6 +102,8 @@ public final class SessionPlanner {
         if (request.intent() == Intent.EXPLORE && !genres.contains(genre)) score += 20;
         if (artists.contains(track.artist().toLowerCase(Locale.ROOT))) score -= 24;
         score += request.familiarFirst() ? Math.min(plays * 8, 24) : (plays == 0 ? 10 : 0);
+        String instrumentation = track.metadata().text(sangitam.desktop.model.TrackMetadata.Field.INSTRUMENTATION).toLowerCase(Locale.ROOT);
+        if ((request.intent()==Intent.FOCUS || request.intent()==Intent.UNWIND) && hasAny(instrumentation,"piano","strings","acoustic")) score += 6;
         return score;
     }
 

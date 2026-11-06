@@ -119,6 +119,7 @@ public final class DiscoverPanel extends JPanel {
     }
 
     public void focusSearch() { query.requestFocusInWindow(); }
+    public void prepareArtistSearch(String artist) { if (activeSearch != null) activeSearch.cancel(true); generation++; query.setText(artist); model.clear(); status.setText("Choose a provider and Search catalog to look up this artist."); focusSearch(); }
 
     public void refreshProviders() {
         MusicProvider selectedProvider = (MusicProvider) source.getSelectedItem();
