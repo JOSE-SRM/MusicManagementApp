@@ -44,7 +44,8 @@ class MusicProviderTest {
     @Test void musicBrainzReadsRecordingWithoutAnAudioClaim() {
         var body = JsonParser.parseString("""
             {"recordings":[{"id":"12345678-1234-1234-1234-123456789abc","title":"Blue Hour",
-              "artist-credit":[{"name":"Aster Avenue"}],"releases":[{"title":"Night Drive"}]}]}
+              "artist-credit":[{"name":"Aster Avenue"}],
+              "releases":[{"id":"22345678-1234-1234-1234-123456789abc","title":"Night Drive"}]}]}
             """).getAsJsonObject();
         var track = MusicBrainzProvider.parse(body).getFirst();
         assertEquals("MusicBrainz", track.source());

@@ -33,6 +33,7 @@ public final class TrackSearch {
         return query.isEmpty() || track.title().toLowerCase(Locale.ROOT).contains(query)
             || track.artist().toLowerCase(Locale.ROOT).contains(query)
             || track.album().toLowerCase(Locale.ROOT).contains(query)
-            || track.genre().toLowerCase(Locale.ROOT).contains(query);
+            || track.genre().toLowerCase(Locale.ROOT).contains(query)
+            || track.metadata().searchableText().contains(query);
     }
 }

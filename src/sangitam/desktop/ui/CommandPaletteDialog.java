@@ -56,7 +56,7 @@ public final class CommandPaletteDialog extends JDialog {
         commandList.setFixedCellHeight(42);
         commandList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         commandList.setBorder(Theme.padding(4, 4, 4, 4));
-        center.add(new JScrollPane(commandList), BorderLayout.CENTER);
+        center.add(new PixelScrollPane(commandList), BorderLayout.CENTER);
         root.add(center, BorderLayout.CENTER);
         root.add(UiFactory.label("Enter to run · Esc to close", Theme.SMALL, Theme.TEXT_MUTED), BorderLayout.SOUTH);
 

@@ -2,6 +2,7 @@ package sangitam.desktop.discovery;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import sangitam.desktop.storage.ProviderCredentials;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -11,13 +12,13 @@ import java.util.List;
 public final class YouTubeProvider implements MusicProvider {
     private final String apiKey;
 
-    public YouTubeProvider() { this(System.getenv("SANGITAM_YOUTUBE_API_KEY")); }
+    public YouTubeProvider() { this(ProviderCredentials.get(ProviderCredentials.YOUTUBE_KEY, "SANGITAM_YOUTUBE_API_KEY")); }
     YouTubeProvider(String apiKey) { this.apiKey = apiKey; }
 
     @Override public String name() { return "YouTube"; }
     @Override public String setupHint() {
         return available() ? "Video search · opens results on YouTube"
-            : "Set SANGITAM_YOUTUBE_API_KEY, then restart Sangitam";
+            : "Add a YouTube API key in Settings to search the catalog.";
     }
     @Override public boolean available() { return apiKey != null && !apiKey.isBlank(); }
 

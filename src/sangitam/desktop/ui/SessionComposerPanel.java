@@ -1,176 +1,193 @@
 package sangitam.desktop.ui;
 
+import sangitam.desktop.library.LibraryService;
 import sangitam.desktop.session.SessionPlanner;
 
 import javax.swing.*;
 import java.awt.*;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.text.ParseException;
 import java.util.function.Consumer;
 
-/**
- * Sangitam's signature interaction: request a queue by intent, energy and available time.
- * IMPORTANT: The implementation is intentionally ordinary Swing—models, listeners and a custom-painted panel.
- */
+/** Collects the listening request and draws its intended energy trajectory. */
 public final class SessionComposerPanel extends JPanel {
-    private static final long serialVersionUID = 1L;
-    private final transient Map<String, JToggleButton> intents = new LinkedHashMap<>();
-    private final JSlider energy = new JSlider(0, 100, 45);
-    private final JLabel energyValue = UiFactory.label("45 · balanced", Theme.SMALL, Theme.BLUE);
-    private final JComboBox<String> duration = new JComboBox<>(new String[] {"25 minutes", "45 minutes", "60 minutes", "90 minutes"});
-    private final JCheckBox familiarOnly = new JCheckBox("Prioritise familiar tracks");
-    private final JLabel recipeTitle = UiFactory.label("Balanced focus", Theme.HEADING, Theme.TEXT);
-    private final JLabel recipeDetail = UiFactory.label(
-        "<html>Choose an intent and build from your library.<br>You can edit the queue below.</html>",
-        Theme.BODY, Theme.TEXT_MUTED);
-    private final SoundscapeCanvas canvas = new SoundscapeCanvas();
-    private final transient Consumer<String> notify;
-    private final transient Consumer<SessionPlanner.Request> onBuild;
+    private final JComboBox<SessionPlanner.Intent> intent = new JComboBox<>(SessionPlanner.Intent.values());
+    private final JComboBox<SessionPlanner.Mood> mood = new JComboBox<>(SessionPlanner.Mood.values());
+    private final JSlider start = new JSlider(0, 100, 45);
+    private final JSlider end = new JSlider(0, 100, 30);
+    private final JSpinner minutes = new JSpinner(new SpinnerNumberModel(45, 1, 240, 5));
+    private final JCheckBox context = new JCheckBox("Use recent listening and calendar patterns in Auto", true);
+    private final JCheckBox familiar = new JCheckBox("Favour familiar recordings");
+    private final JLabel analysis = UiFactory.label("Import music to begin", Theme.SMALL, Theme.TEXT_MUTED);
+    private final JTextArea description = new JTextArea("Choose a mood and energy arc. Build a temporary journey and save it if you like it.");
+    private final Arc arc = new Arc();
+    private Runnable analyze = () -> { };
+    private Runnable cancelAnalysis = () -> { };
 
-    public SessionComposerPanel(Consumer<String> notify, Consumer<SessionPlanner.Request> onBuild) {
-        super(new BorderLayout(24, 0));
-        this.notify = notify;
-        this.onBuild = onBuild;
+    public SessionComposerPanel(Consumer<String> notify, Consumer<SessionPlanner.Request> build) {
+        super(new BorderLayout(16, 12));
         setBackground(Theme.SURFACE);
-        setBorder(BorderFactory.createCompoundBorder(
-            UiFactory.roundedBorder(Theme.DIVIDER, 20), Theme.padding(24, 26, 24, 26)));
-        add(controls(), BorderLayout.WEST);
-        add(preview(), BorderLayout.CENTER);
-    }
+        setBorder(BorderFactory.createCompoundBorder(UiFactory.roundedBorder(Theme.DIVIDER, 22), Theme.padding(18, 20, 18, 20)));
 
-    private JComponent controls() {
-        JPanel panel = new JPanel();
-        panel.setOpaque(false);
-        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-        panel.setPreferredSize(new Dimension(350, 0));
+        JPanel header = new JPanel(new BorderLayout(12, 0));
+        header.setOpaque(false);
+        header.add(UiFactory.label("Shape the session", Theme.HEADING, Theme.TEXT), BorderLayout.WEST);
+        header.add(analysis, BorderLayout.EAST);
+        add(header, BorderLayout.NORTH);
 
-        panel.add(UiFactory.label("Shape this session", Theme.HEADING, Theme.TEXT));
-        panel.add(Box.createVerticalStrut(5));
-        panel.add(UiFactory.label("Start with how you want the next hour to feel.", Theme.BODY, Theme.TEXT_MUTED));
-        panel.add(Box.createVerticalStrut(20));
-        panel.add(fieldLabel("Intent"));
-        panel.add(Box.createVerticalStrut(8));
-
-        JPanel intentRow = new JPanel(new GridLayout(1, 3, 8, 0));
-        intentRow.setOpaque(false);
-        ButtonGroup intentGroup = new ButtonGroup();
-        addIntent(intentRow, intentGroup, "Focus", true);
-        addIntent(intentRow, intentGroup, "Explore", false);
-        addIntent(intentRow, intentGroup, "Unwind", false);
-        intentRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
-        intentRow.setAlignmentX(Component.LEFT_ALIGNMENT);
-        panel.add(intentRow);
-        panel.add(Box.createVerticalStrut(17));
-
-        JPanel energyHeading = new JPanel(new BorderLayout());
-        energyHeading.setOpaque(false);
-        energyHeading.setAlignmentX(Component.LEFT_ALIGNMENT);
-        energyHeading.add(fieldLabel("Energy"), BorderLayout.WEST);
-        energyHeading.add(energyValue, BorderLayout.EAST);
-        panel.add(energyHeading);
-        energy.setOpaque(false);
-        energy.setMajorTickSpacing(25);
-        energy.setPaintTicks(true);
-        energy.setAlignmentX(Component.LEFT_ALIGNMENT);
-        energy.addChangeListener(event -> energyValue.setText(energy.getValue() + " · " + energyWord()));
-        panel.add(energy);
-        panel.add(Box.createVerticalStrut(12));
-
-        JPanel durationRow = new JPanel(new BorderLayout(12, 0));
-        durationRow.setOpaque(false);
-        durationRow.setAlignmentX(Component.LEFT_ALIGNMENT);
-        durationRow.add(fieldLabel("Time available"), BorderLayout.WEST);
-        duration.setFont(Theme.BODY);
-        duration.setForeground(Theme.TEXT);
-        duration.setBackground(Theme.SURFACE_RAISED);
-        durationRow.add(duration, BorderLayout.CENTER);
-        durationRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 34));
-        panel.add(durationRow);
-        panel.add(Box.createVerticalStrut(12));
-        familiarOnly.setOpaque(false);
-        familiarOnly.setForeground(Theme.TEXT_MUTED);
-        familiarOnly.setFont(Theme.SMALL);
-        familiarOnly.setAlignmentX(Component.LEFT_ALIGNMENT);
-        panel.add(familiarOnly);
-        panel.add(Box.createVerticalStrut(17));
-
-        JButton build = UiFactory.button("Build my session", AppIcons.of(AppIcons.Kind.PLAY, 15, Theme.BLACK), true);
-        build.setAlignmentX(Component.LEFT_ALIGNMENT);
-        build.setMaximumSize(new Dimension(Integer.MAX_VALUE, 42));
-        build.addActionListener(event -> buildSession());
-        panel.add(build);
-        return panel;
-    }
-
-    private JComponent preview() {
-        JPanel preview = new JPanel(new BorderLayout(0, 12));
-        preview.setBackground(Theme.BLACK);
-        preview.setBorder(BorderFactory.createCompoundBorder(
-            UiFactory.roundedBorder(Theme.DIVIDER, 18), Theme.padding(18, 20, 18, 20)));
-        preview.add(canvas, BorderLayout.CENTER);
-
-        JPanel copy = new JPanel();
-        copy.setOpaque(false);
-        copy.setLayout(new BoxLayout(copy, BoxLayout.Y_AXIS));
-        copy.add(UiFactory.label("Session preview", Theme.SMALL, Theme.BLUE));
-        copy.add(Box.createVerticalStrut(5));
-        copy.add(recipeTitle);
-        copy.add(Box.createVerticalStrut(4));
-        copy.add(recipeDetail);
-        preview.add(copy, BorderLayout.SOUTH);
-        return preview;
-    }
-
-    private void addIntent(JPanel row, ButtonGroup group, String name, boolean selected) {
-        JToggleButton button = new JToggleButton(name, selected);
-        button.setFont(Theme.BODY_BOLD);
-        button.setForeground(Theme.TEXT);
-        button.setBackground(selected ? Theme.BLUE_STRONG : Theme.SURFACE_RAISED);
-        button.setOpaque(true);
-        button.setFocusPainted(false);
-        button.setBorder(BorderFactory.createCompoundBorder(
-            UiFactory.roundedBorder(selected ? Theme.BLUE : Theme.DIVIDER, 10), Theme.padding(7, 9, 7, 9)));
-        button.addActionListener(event -> {
-            intents.values().forEach(this::styleIntentButton);
-            notify.accept(name + " intent selected");
+        JPanel fields = new JPanel(new GridLayout(0, 2, 14, 8));
+        fields.setOpaque(false);
+        field(fields, "Intent", intent);
+        field(fields, "Mood palette", mood);
+        field(fields, "Start energy", start);
+        field(fields, "Arrive at energy", end);
+        field(fields, "Minutes", minutes);
+        minutes.setEditor(new JSpinner.NumberEditor(minutes, "0"));
+        var number = ((JSpinner.NumberEditor) minutes.getEditor()).getTextField();
+        number.setBackground(Theme.SURFACE_RAISED);
+        number.setForeground(Theme.TEXT);
+        number.setCaretColor(Theme.TEXT);
+        start.setUI(new RoundSliderUI(start));
+        end.setUI(new RoundSliderUI(end));
+        start.setForeground(Theme.BLUE);
+        end.setForeground(Theme.SUCCESS);
+        mood.addActionListener(event -> {
+            switch ((SessionPlanner.Mood) mood.getSelectedItem()) {
+                case CALM -> start.setValue(25);
+                case SAD -> start.setValue(30);
+                case HAPPY -> start.setValue(55);
+                case ENERGETIC -> start.setValue(80);
+                case TENSE -> start.setValue(70);
+                default -> { }
+            }
+            updateStartControl();
         });
-        intents.put(name, button);
-        group.add(button);
-        row.add(button);
+        context.addActionListener(event -> updateStartControl());
+        start.addChangeListener(event -> arc.repaint());
+        end.addChangeListener(event -> arc.repaint());
+        updateStartControl();
+
+        JPanel center = new JPanel(new BorderLayout(0, 8));
+        center.setOpaque(false);
+        center.add(fields, BorderLayout.NORTH);
+        center.add(arc, BorderLayout.CENTER);
+        description.setLineWrap(true);
+        description.setWrapStyleWord(true);
+        description.setEditable(false);
+        description.setOpaque(false);
+        description.setForeground(Theme.TEXT_MUTED);
+        description.setFont(Theme.SMALL);
+        JScrollPane notes = new PixelScrollPane(description);
+        notes.setPreferredSize(new Dimension(0, 65));
+        notes.setBorder(null);
+        notes.setOpaque(false);
+        notes.getViewport().setOpaque(false);
+        notes.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        UiFactory.styleScroll(notes);
+        center.add(notes, BorderLayout.SOUTH);
+        add(center);
+
+        JPanel footer = new JPanel(new GridLayout(0, 1, 0, 5));
+        footer.setOpaque(false);
+        context.setOpaque(false);
+        familiar.setOpaque(false);
+        footer.add(context);
+        footer.add(familiar);
+
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        buttons.setOpaque(false);
+        JButton refresh = UiFactory.button("Deep analyse library", null, false);
+        refresh.addActionListener(event -> analyze.run());
+        JButton cancel = UiFactory.button("Cancel analysis", null, false);
+        cancel.addActionListener(event -> cancelAnalysis.run());
+        JButton create = UiFactory.button("Build my journey", AppIcons.of(AppIcons.Kind.PLAY, 20, Theme.BLACK), true);
+        create.addActionListener(event -> {
+            try {
+                minutes.commitEdit();
+                build.accept(new SessionPlanner.Request((SessionPlanner.Intent) intent.getSelectedItem(),
+                    start.getValue(), (Integer) minutes.getValue(), familiar.isSelected(),
+                    (SessionPlanner.Mood) mood.getSelectedItem(), end.getValue(), automaticStart()));
+                describe("Finding recordings for this arc…");
+            } catch (ParseException invalid) {
+                notify.accept("Choose a valid duration");
+            }
+        });
+        buttons.add(refresh);
+        buttons.add(cancel);
+        buttons.add(create);
+        footer.add(buttons);
+        add(footer, BorderLayout.SOUTH);
     }
 
-    private void styleIntentButton(JToggleButton button) {
-        button.setBackground(button.isSelected() ? Theme.BLUE_STRONG : Theme.SURFACE_RAISED);
-        button.setBorder(BorderFactory.createCompoundBorder(
-            UiFactory.roundedBorder(button.isSelected() ? Theme.BLUE : Theme.DIVIDER, 10),
-            Theme.padding(7, 9, 7, 9)));
+    private static void field(JPanel fields, String name, JComponent input) {
+        JLabel label = UiFactory.label(name, Theme.SMALL, Theme.TEXT_MUTED);
+        label.setLabelFor(input);
+        input.getAccessibleContext().setAccessibleName(name);
+        fields.add(label);
+        fields.add(input);
     }
 
-    private JLabel fieldLabel(String text) {
-        return UiFactory.label(text, Theme.BODY_BOLD, Theme.TEXT);
+    private boolean automaticStart() {
+        return mood.getSelectedItem() == SessionPlanner.Mood.AUTO && context.isSelected();
     }
 
-    private void buildSession() {
-        String intent = intents.entrySet().stream()
-            .filter(entry -> entry.getValue().isSelected())
-            .map(Map.Entry::getKey).findFirst().orElse("Focus");
-        int minutes = Integer.parseInt(((String) duration.getSelectedItem()).split(" ")[0]);
-        recipeTitle.setText(intent + " · " + energyWord());
-        recipeDetail.setText("Choosing tracks from your library…");
-        canvas.reveal(energy.getValue());
-        onBuild.accept(new SessionPlanner.Request(SessionPlanner.Intent.valueOf(intent.toUpperCase(java.util.Locale.ROOT)),
-            energy.getValue(), minutes, familiarOnly.isSelected()));
+    private void updateStartControl() {
+        start.setEnabled(!automaticStart());
+        start.setToolTipText(automaticStart() ? "Auto chooses the starting energy from listening context" : "Set the starting energy");
+        arc.repaint();
+    }
+
+    private void describe(String message) {
+        description.setText(message);
+        description.setCaretPosition(0);
+    }
+
+    public void setAnalyzeAction(Runnable action) { analyze = action; }
+    public void setCancelAnalysisAction(Runnable action) { cancelAnalysis = action; }
+
+    public void setCatalog(LibraryService.Catalog catalog) {
+        analysis.setText(catalog.measuredCount() + " / " + catalog.tracks().size() + " analyses up to date");
     }
 
     public void showPlan(SessionPlanner.Plan plan) {
-        recipeDetail.setText(plan.choices().isEmpty() ? "No playable tracks found. Add music first."
-            : "<html>" + plan.choices().size() + " tracks · about "
-                + Math.round(plan.estimatedSeconds() / 60.0) + " minutes<br>See the editable queue below</html>");
+        describe(plan.choices().isEmpty() ? "No eligible recordings. Check availability and Avoid ratings."
+            : plan.choices().size() + " recordings · " + Math.round(plan.estimatedSeconds() / 60d) + " minutes. Temporary until saved.");
     }
 
-    private String energyWord() {
-        if (energy.getValue() < 34) return "calm";
-        if (energy.getValue() < 67) return "balanced";
-        return "charged";
+    public void showContext(String text) {
+        if (!text.isBlank()) describe(description.getText() + "\n" + text);
+    }
+
+    public void showPlaylist(String name, SessionPlanner.Plan plan) {
+        describe("Saved journey: " + name + " · " + plan.choices().size() + " recordings");
+    }
+
+    private final class Arc extends JComponent {
+        Arc() {
+            setPreferredSize(new Dimension(0, 90));
+            setToolTipText("Requested energy arc. Recorded energy will vary between tracks.");
+        }
+
+        @Override protected void paintComponent(Graphics graphics) {
+            Graphics2D g = (Graphics2D) graphics.create();
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            int width = getWidth(), height = getHeight();
+            if (width < 70 || height < 44) { g.dispose(); return; }
+            int starting = automaticStart() ? 50 : start.getValue();
+            int from = height - 16 - (height - 40) * starting / 100;
+            int to = height - 16 - (height - 40) * end.getValue() / 100;
+            g.setColor(Theme.DIVIDER);
+            g.drawLine(16, height - 12, width - 16, height - 12);
+            g.setColor(Theme.BLUE);
+            g.setStroke(automaticStart() ? new BasicStroke(2, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND,
+                1, new float[]{6, 6}, 0) : new BasicStroke(3));
+            g.drawLine(20, from, width - 20, to);
+            g.fillOval(15, from - 5, 10, 10);
+            g.setFont(Theme.SMALL);
+            g.drawString(automaticStart() ? "Auto" : Integer.toString(starting), 20, 15);
+            g.setColor(Theme.SUCCESS);
+            g.fillOval(width - 25, to - 5, 10, 10);
+            g.drawString(Integer.toString(end.getValue()), width - 40, 15);
+            g.dispose();
+        }
     }
 }

@@ -25,3 +25,6 @@ replay_pid*
 
 # Maven output; compiled classes continue to live in bin/.
 /target/
+/bin/native/
+/dist/
+/scale-tests/
