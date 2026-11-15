@@ -275,7 +275,7 @@ The repository records local WAV and MP3 playback checks for both engines. Prese
 | **Preamp** | Overall EQ level from −12 to 0 dB. A cut creates headroom when bands are boosted. Flat EQ with UI preamp at 0 dB aims for unity. The VLC 3 single-pass EQ has a dry-signal factor of 0.25, so the adapter adds an internal `20 log10(4)` offset. |
 | **Master volume** | Changes the overall output. Native VLC gets the requested percentage. The JavaFX adapter maps the app slider through a cubic gain curve and respects the backend's 100% ceiling. |
 | **ReplayGain** | VLC reads existing Track or Album gain tags with peak protection and zero default gain. A saved mode takes effect at the next track start so playback can continue. JavaFX reports this feature unavailable. |
-| **Live spectrum** | A readout of frequency magnitudes from the current JavaFX decoder. It requests 32 bands at about 100 ms intervals with a −72 dB threshold. The Swing panel draws real bars, clears on pause and displays an unsupported message in native VLC mode. |
+| **Live spectrum** | A readout of 96 frequency bands from JavaFX or a silent secondary VLC decoder. The Swing panel smooths changes and clears on pause. VLC's bands represent the recording before audio effects. The user can choose a color palette in View. |
 | **Offline FFT / Journey graph** | The analyzer's FFT describes a sampled passage and helps estimate brightness and key. The Journey graph plots energy of selected tracks in order. Both serve different purposes from the real-time spectrum. |
 
 The playbar's mini EQ shows the saved curve. The settings panel routes draft changes through the live preview. The dialog can save the new values or restore the prior values when cancelled. [AudioSettings](../src/sangitam/desktop/playback/AudioSettings.java) · [Gain mapping](../src/sangitam/desktop/playback/AudioGain.java) · [Spectrum panel](../src/sangitam/desktop/ui/SpectrumPanel.java) · [OpenJFX MediaPlayer API](https://openjfx.io/javadoc/21/javafx.media/javafx/scene/media/MediaPlayer.html)
@@ -312,7 +312,7 @@ These are distinguishing aspects of the implementation. Several build on familia
 
 | Priority | Possible improvement | What to demonstrate or measure |
 | --- | --- | --- |
-| **1. Reliable everyday playback** | Test a codec matrix, fast seeks, removable/network drives, Windows media flyout and output-device changes. Add a headroom/clip indicator, real VLC spectrum, then gapless or crossfade. | Actual audio, seek accuracy and transition time across formats and engines. |
+| **1. Reliable everyday playback** | Test a codec matrix, fast seeks, removable/network drives, Windows media flyout and output-device changes. Add a headroom/clip indicator, then gapless or crossfade. | Actual audio, seek accuracy and transition time across formats and engines. |
 | **2. Scale the full catalog** | Move General and Locations summaries into indexed queries, defer full membership until needed, consider full-text or keyset paging where appropriate, and support relinking moved files. | Time to first usable page, peak RAM and navigation latency on real libraries. |
 | **3. Build work-aware classical Journeys** | Analyze several passages and improve confidence estimates. Keep multi-movement works together, choose preferred performances, and optimize transitions for duration, tempo and intensity. | Compare generated sessions using diverse music and show reasons for grouping. |
 | **4. Extend listening insights** | Add date filters, trends and exports. Offer private comparisons of composers, performances, ensembles and work versions. | Defined denominators, time windows and useful charts on a demo dataset. |
@@ -330,7 +330,7 @@ Density presets, full-screen, undo/redo and several Help or export entries are d
 | **2. Architecture** | Show Swing → services → files/SQLite/decoder. Explain why heavy work uses workers and why local media and online catalog results have different types. |
 | **3. Import and SQLite** | Import a small folder, show one row and explain path identity, file stamps, rescans, overrides and why the database stays small compared with the collection. |
 | **4. Library at scale** | Compare SQL Search, in-memory General paging, and lazy Locations. Right-click a song and put it in a playlist. Contrast regular membership with a saved smart rule. |
-| **5. Playback** | Play, pause and seek. Explain engine discovery, the state feedback loop, volume persistence and EQ. Show spectrum only when running the JavaFX fallback. |
+| **5. Playback** | Play, pause and seek. Explain engine discovery, the state feedback loop, volume persistence and EQ. Show the spectrum while playing. |
 | **6. Audio measurements and Journey** | Show Edit details → Analysis, then build a Journey. Point at the graph, explain an individual choice, replace a slot and save the draft. |
 | **7. Online and Rediscover** | Show an external catalog link or cached sourced artist profile. Explain what travels over HTTPS and how local minutes differ from provider event counts. |
 | **8. Results and next steps** | Show the recorded scope of tests, the known runtime limits and two concrete improvements you would prioritize. |

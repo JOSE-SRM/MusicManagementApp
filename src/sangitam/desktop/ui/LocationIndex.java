@@ -8,7 +8,8 @@ import java.util.concurrent.CancellationException;
 /** Immutable path/track index. It contains no Swing nodes and never touches the filesystem. */
 final class LocationIndex {
     static final int PAGE_SIZE = 100;
-    static final Comparator<Path> PATH_ORDER = Comparator.comparing(Path::toString, String.CASE_INSENSITIVE_ORDER).thenComparing(Path::toString);
+    static final Comparator<Path> PATH_ORDER = Comparator.comparing(Path::toString, String.CASE_INSENSITIVE_ORDER)
+        .thenComparing(Comparator.naturalOrder());
     record Page(List<Object> children, int offset, int total) {
         Page { children = List.copyOf(children); }
         boolean hasNext() { return offset + children.size() < total; }
@@ -16,11 +17,15 @@ final class LocationIndex {
     private final List<Path> roots;
     private final Map<Path, List<Path>> folders;
     private final Map<Path, List<Track>> songs;
+    private final Map<Path, Integer> counts;
     private final int matches;
-    private LocationIndex(List<Path> roots, Map<Path, List<Path>> folders, Map<Path, List<Track>> songs, int matches) {
-        this.roots = List.copyOf(roots); this.folders = Map.copyOf(folders); this.songs = Map.copyOf(songs); this.matches = matches;
+    private LocationIndex(List<Path> roots, Map<Path, List<Path>> folders, Map<Path, List<Track>> songs,
+                          Map<Path, Integer> counts, int matches) {
+        this.roots = List.copyOf(roots); this.folders = Map.copyOf(folders); this.songs = Map.copyOf(songs);
+        this.counts = Map.copyOf(counts); this.matches = matches;
     }
     int matches() { return matches; }
+    int matches(Path folder) { return folder == null ? matches : counts.getOrDefault(folder, 0); }
     static LocationIndex build(List<Track> input, String text) {
         String query = LibraryEntry.lower(text.strip());
         var songs = new HashMap<Path, List<Track>>(); var common = new HashMap<Path, Path>(); int matches = 0;
@@ -32,19 +37,31 @@ final class LocationIndex {
             common.merge(folder.getRoot(), folder, (a, b) -> { while (!b.startsWith(a)) a = a.getParent(); return a; });
         }
         var children = new HashMap<Path, SortedSet<Path>>();
+        var counts = new HashMap<Path, Integer>();
         for (Path folder : songs.keySet()) {
             if (Thread.currentThread().isInterrupted()) throw new CancellationException();
             Path top = common.get(folder.getRoot());
             for (Path at = folder; ; at = at.getParent()) {
+                counts.merge(at, songs.get(folder).size(), Integer::sum);
                 children.computeIfAbsent(at, ignored -> new TreeSet<>(PATH_ORDER));
                 if (at.equals(top)) break;
                 children.computeIfAbsent(at.getParent(), ignored -> new TreeSet<>(PATH_ORDER)).add(at);
             }
         }
         var folders = new HashMap<Path, List<Path>>(); children.forEach((path, list) -> folders.put(path, List.copyOf(list)));
-        Comparator<Track> trackOrder = Comparator.comparing(Track::title, String.CASE_INSENSITIVE_ORDER).thenComparing(track -> track.path().toString());
+        Comparator<Track> trackOrder = Comparator.comparingInt(LocationIndex::movementOrder)
+            .thenComparing(Track::title, String.CASE_INSENSITIVE_ORDER).thenComparing(track -> track.path().toString());
         songs.replaceAll((path, list) -> { if (Thread.currentThread().isInterrupted()) throw new CancellationException(); list.sort(trackOrder); return List.copyOf(list); });
-        return new LocationIndex(common.values().stream().sorted(PATH_ORDER).toList(), folders, songs, matches);
+        return new LocationIndex(common.values().stream().sorted(PATH_ORDER).toList(), folders, songs, counts, matches);
+    }
+
+    private static int movementOrder(Track track) {
+        String filename = track.path().getFileName().toString();
+        if (filename.length() > 5 && filename.startsWith(" - ", 2)
+            && filename.charAt(0) >= '0' && filename.charAt(0) <= '9'
+            && filename.charAt(1) >= '0' && filename.charAt(1) <= '9')
+            return Integer.parseInt(filename.substring(0, 2));
+        return Integer.MAX_VALUE;
     }
     Page page(Path parent, int requested) {
         if (requested < 0) throw new IllegalArgumentException("Invalid location page");

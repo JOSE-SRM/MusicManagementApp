@@ -27,7 +27,7 @@ final class ShortcutPanel extends JPanel {
             JButton clear = UiFactory.button("Clear", null, false); clear.getAccessibleContext().setAccessibleName("Clear " + command + " shortcut");
             clear.addActionListener(event -> { values.remove(command); update(command); }); rows.add(clear);
         }
-        JScrollPane scroll = new JScrollPane(rows); scroll.setBorder(null); UiFactory.styleScroll(scroll); scroll.setPreferredSize(new Dimension(690, 440)); add(scroll);
+        JScrollPane scroll = new PixelScrollPane(rows); scroll.setBorder(null); UiFactory.styleScroll(scroll); scroll.setPreferredSize(new Dimension(690, 440)); add(scroll);
         JButton reset = UiFactory.button("Restore defaults", null, false); reset.addActionListener(event -> load(ShortcutBindings.defaults(menuMask))); add(reset, BorderLayout.SOUTH); load(current);
     }
     private void load(ShortcutBindings bindings) { for (Command command : Command.values()) { KeyStroke key = bindings.key(command); if (key == null) values.remove(command); else values.put(command, key); update(command); } }

@@ -11,6 +11,7 @@ public final class ProviderCredentials {
     public static final String YOUTUBE_KEY = "youtube.api-key";
     public static final String APPLE_TOKEN = "apple.developer-token";
     public static final String LASTFM_KEY = "lastfm.api-key";
+    public static final String ACOUSTID_KEY = "acoustid.application-key";
     private static final Map<String, String> CACHE = new ConcurrentHashMap<>();
     private static volatile CompletableFuture<Void> loading;
 
@@ -31,7 +32,7 @@ public final class ProviderCredentials {
                 current = loading;
                 if (current == null) {
                     loading = current = CompletableFuture.runAsync(() -> {
-                        for (String key : new String[] {SPOTIFY_TOKEN, YOUTUBE_KEY, APPLE_TOKEN, LASTFM_KEY}) {
+                        for (String key : new String[] {SPOTIFY_TOKEN, YOUTUBE_KEY, APPLE_TOKEN, LASTFM_KEY, ACOUSTID_KEY}) {
                             String secret = WindowsCredentialStore.read(key);
                             if (secret != null && !secret.isBlank()) CACHE.put(key, secret);
                         }

@@ -47,6 +47,49 @@ class TrackDetailsPanelTest {
             assertEquals(Set.of("Study", "My label"), panel.changes().userTags());
         });
     }
+    @Test void analysisShowsSamplingAndEvidenceAndHidesSupersededEstimates() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            var current = new AudioFeatures(AudioFeatures.VERSION, 1, 2, 180, -23, -1, 18, 620,
+                106, .35, "B♭", "major", .23, 70, 50, "Energetic", 0, List.of(), 5, 99, 116, 18, List.of());
+            var panel = new TrackDetailsPanel(List.of(track("song.flac", "Composer")), false,
+                new TrackTags(70, 60, true, 1, 2, current));
+            String text = find(panel, JTextArea.class, "Local audio analysis").getText();
+            assertTrue(text.contains("B♭ major estimated key"));
+            assertTrue(text.contains("5 passages"));
+            assertTrue(text.contains("99–116 BPM"));
+            assertTrue(text.contains("B♭ major · Weak evidence"));
+            assertFalse(text.contains("100%"));
+
+            var old = new AudioFeatures(1, 1, 2, 180, -23, -1, 18, 620, 120, .28,
+                "D", "minor", 1, 70, 30, "Tense", .74, List.of());
+            var stale = new TrackDetailsPanel(List.of(track("song.flac", "Composer")), false,
+                new TrackTags(70, 60, true, 1, 2, old));
+            String pending = find(stale, JTextArea.class, "Local audio analysis").getText();
+            assertTrue(pending.contains("Analysis update pending"));
+            assertTrue(pending.contains("Audio sampled"));
+            assertFalse(pending.contains("D minor"));
+            assertEquals(50, old.recommendationValence());
+            var missing = new TrackDetailsPanel(List.of(track("moved.flac", "Composer")), false,
+                new TrackTags(70, 60, true, 1, 2, old), true);
+            String unavailable = find(missing, JTextArea.class, "Local audio analysis").getText();
+            assertTrue(unavailable.contains("Audio file unavailable"));
+            assertTrue(unavailable.contains("Audio sampled"));
+        });
+    }
+
+    @Test void existingAccidentalSpellingsDisplayAsSymbolsWithoutCreatingEdits() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            var track = new Track(Path.of("fugue.flac"), "Fugue", "Artist", "Album", 180, "FLAC", "Classical",
+                TrackMetadata.empty().edit(Map.of(Field.KEY, "F# minor", Field.WORK_KEY, "B-flat major"), null));
+            var panel = new TrackDetailsPanel(List.of(track), false, TrackTags.pending());
+            assertEquals("F♯ minor", find(panel, JTextField.class, "Musical key").getText());
+            assertEquals("B♭ major", find(panel, JTextField.class, "Work key").getText());
+            assertTrue(panel.changes().metadata().isEmpty());
+            String analysis = find(panel, JTextArea.class, "Local audio analysis").getText();
+            assertTrue(analysis.contains("F♯ minor"));
+            assertTrue(analysis.contains("B♭ major"));
+        });
+    }
     static <T extends JComponent> T find(Container parent, Class<T> type, String name) {
         for (Component child : parent.getComponents()) {
             if (type.isInstance(child) && name.equals(((JComponent) child).getAccessibleContext().getAccessibleName())) return type.cast(child);

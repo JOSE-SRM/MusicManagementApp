@@ -23,7 +23,8 @@ public final class Theme {
     public static final Color SCROLL_THUMB = new Color(75, 96, 115);
     public static final Color SUCCESS = new Color(100, 218, 178);
 
-    public static final String FONT_FAMILY = System.getProperty("os.name", "").startsWith("Windows") ? "Segoe UI" : Font.DIALOG;
+    // Logical fonts let the runtime select fallback glyphs for multilingual tags and music notation.
+    public static final String FONT_FAMILY = Font.DIALOG;
     public static final Font BODY = font(Font.PLAIN, 15);
     public static final Font BODY_BOLD = font(Font.BOLD, 15);
     public static final Font SMALL = font(Font.PLAIN, 13);

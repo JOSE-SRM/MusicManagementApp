@@ -88,7 +88,7 @@ public final class DiscoverPanel extends JPanel {
             row.add(detail, BorderLayout.SOUTH);
             return row;
         });
-        JScrollPane scroll = new JScrollPane(results);
+        JScrollPane scroll = new PixelScrollPane(results);
         scroll.setBorder(BorderFactory.createEmptyBorder());
         add(scroll, BorderLayout.CENTER);
 

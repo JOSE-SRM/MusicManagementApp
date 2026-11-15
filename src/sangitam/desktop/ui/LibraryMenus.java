@@ -46,7 +46,7 @@ final class LibraryMenus {
 
     JPopupMenu locationMenu(Path folder) {
         JPopupMenu menu = new JPopupMenu();
-        List<Path> paths = panel.tracks().stream().map(Track::path).filter(path -> path.startsWith(folder)).toList();
+        List<Path> paths = panel.tracksAt(folder);
         menu.add(addToPlaylist(paths, "Add to playlist", 0));
         menu.add(item("Rescan library…", actions::rescan));
         menu.add(item("Remove from library…", () -> {
@@ -73,6 +73,14 @@ final class LibraryMenus {
                 menu.add(taste);
                 if (entry.kind() != ARTIST) menu.add(item("Edit details…",
                     () -> actions.editDetails(entry.tracks(), entry.kind() == ALBUM)));
+                if (entry.kind() == SONG) menu.add(playable("Re-analyse track…", entry,
+                    () -> actions.reanalyze(entry.tracks().getFirst())));
+                if (entry.kind() == SONG) menu.add(item("Identify recording…",
+                    () -> actions.identifyRecording(entry.tracks().getFirst())));
+                if (entry.kind() == SONG) menu.add(item("Sheet music…",
+                    () -> actions.sheetMusic(entry.tracks().getFirst())));
+                if (entry.kind() == SONG) menu.add(item("Download sheet music…",
+                    () -> actions.downloadSheetMusic(entry.tracks().getFirst())));
                 if (entry.kind() != ARTIST) menu.add(playable("Restore file details…", entry, () -> actions.restoreDetails(entry.tracks())));
                 menu.add(playable("Add to queue", entry, () -> actions.queue(entry.tracks())));
                 if (entry.kind() != ARTIST) {
@@ -129,9 +137,18 @@ final class LibraryMenus {
         }
         if (entry.kind() != ARTIST) {
             menu.addSeparator();
-            boolean pinned = panel.collections().pins().contains(entry.key());
-            String label = entry.kind() == SONG ? (pinned ? "Unlike song" : "Like song · add to Liked Songs")
-                : (pinned ? "Unpin" : "Pin to library");
+            var organization = panel.collections();
+            boolean pinned = organization.pins().contains(entry.key());
+            boolean formerPin = false;
+            if (entry.kind() == SONG) {
+                Path path = entry.tracks().getFirst().path();
+                boolean liked = organization.likes().contains(path);
+                formerPin = organization.formerSongPins().contains(path);
+                menu.add(item(liked ? "Unlike song" : "Like song", () -> actions.organize(
+                    liked ? "Removed from Liked Songs" : "Added to Liked Songs",
+                    store -> store.setLiked(path, !liked))));
+            }
+            String label = pinned ? "Unpin" : formerPin ? "Restore former song pin" : "Pin to library";
             menu.add(item(label, () -> actions.organize(
                 pinned ? "Unpinned" : "Pinned to library", store -> store.setPinned(entry.key(), !pinned))));
         }
@@ -175,7 +192,7 @@ final class LibraryMenus {
         JPanel picker = new JPanel(new BorderLayout(0, 7));
         picker.setBorder(Theme.padding(8, 8, 8, 8));
         picker.add(search, BorderLayout.NORTH);
-        picker.add(new JScrollPane(list), BorderLayout.CENTER);
+        picker.add(new PixelScrollPane(list), BorderLayout.CENTER);
         picker.setPreferredSize(new Dimension(280, 215));
         Runnable add = () -> {
             Playlist target = list.getSelectedValue();
@@ -273,7 +290,7 @@ final class LibraryMenus {
         filter.run();
         JPanel content = new JPanel(new BorderLayout(0, 8));
         content.add(search, BorderLayout.NORTH);
-        content.add(new JScrollPane(songs), BorderLayout.CENTER);
+        content.add(new PixelScrollPane(songs), BorderLayout.CENTER);
         content.setPreferredSize(new Dimension(510, 310));
         if (JOptionPane.showConfirmDialog(panel, content, "Choose songs", JOptionPane.OK_CANCEL_OPTION)
             == JOptionPane.OK_OPTION && !songs.isSelectionEmpty()) {
@@ -348,7 +365,7 @@ final class LibraryMenus {
         return item;
     }
 
-    private JMenuItem item(String text, Runnable action) {
+    static JMenuItem item(String text, Runnable action) {
         JMenuItem item = new JMenuItem(text);
         item.addActionListener(event -> action.run());
         return item;

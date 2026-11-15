@@ -1,6 +1,8 @@
 package sangitam.desktop.ui;
 
 import sangitam.desktop.library.TagVocabulary;
+import sangitam.desktop.model.AudioFeatures;
+import sangitam.desktop.model.MusicalKey;
 import sangitam.desktop.model.Track;
 import sangitam.desktop.model.TrackMetadata;
 import sangitam.desktop.model.TrackMetadata.Field;
@@ -31,6 +33,10 @@ final class TrackDetailsPanel extends JPanel {
     private final JSlider energy, movement;
 
     TrackDetailsPanel(List<Track> tracks, boolean group, TrackTags profile) {
+        this(tracks, group, profile, false);
+    }
+
+    TrackDetailsPanel(List<Track> tracks, boolean group, TrackTags profile, boolean unavailable) {
         super(new BorderLayout());
         this.tracks = List.copyOf(tracks);
         this.group = group;
@@ -55,7 +61,10 @@ final class TrackDetailsPanel extends JPanel {
         JPanel classical = form();
         classical.add(UiFactory.label(group ? "Select Apply for each change. An applied blank clears that field." : "File tags and suggested hints can be corrected here.", Theme.SMALL, Theme.TEXT_MUTED));
         for (Field role : Field.values()) {
-            JTextField input = text(common(track -> track.metadata().text(role)), role.toString());
+            JTextField input = text(common(track -> {
+                String value = track.metadata().text(role);
+                return role == Field.KEY || role == Field.WORK_KEY ? MusicalKey.display(value) : value;
+            }), role.toString());
             metadata.put(role, input);
             JCheckBox checkbox = new JCheckBox("Apply " + role);
             apply.put(role, checkbox);
@@ -64,6 +73,8 @@ final class TrackDetailsPanel extends JPanel {
                 case EMBEDDED -> "Read from the audio file";
                 case TITLE_HINT -> "Suggested from the title; you can correct it";
                 case FOLDER_HINT -> "Suggested from the folder name; you can correct it";
+                case SCORE_REFERENCE -> "Documented score or work catalogue";
+                case ONLINE -> "Matched in the background from online catalog metadata";
                 case USER -> "Edited in your library";
             });
             if (group) { classical.add(checkbox); input.setEnabled(false); checkbox.addActionListener(event -> input.setEnabled(checkbox.isSelected())); }
@@ -79,7 +90,10 @@ final class TrackDetailsPanel extends JPanel {
         JPanel tagTop = form();
         tagTop.add(UiFactory.label("Comma-separated tags. Suggestions are optional; write your own labels too.", Theme.SMALL, Theme.TEXT_MUTED));
         if (group) tagTop.add(replaceTags);
-        tagTop.add(new JScrollPane(tags));
+        tagTop.add(new PixelScrollPane(tags));
+        if (!group && !profile.features().moodTags().isEmpty()) {
+            tagTop.add(UiFactory.label("Analysis tags  " + String.join(", ", profile.features().moodTags()), Theme.SMALL, Theme.TEXT));
+        }
         tagging.add(tagTop, BorderLayout.NORTH);
         JTextField filter = new JTextField();
         filter.getAccessibleContext().setAccessibleName("Find tag suggestion");
@@ -89,7 +103,7 @@ final class TrackDetailsPanel extends JPanel {
         JList<String> suggestions = new JList<>(suggested);
         suggestions.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         JPanel picker = new JPanel(new BorderLayout(0, 6)); picker.setOpaque(false);
-        picker.add(filter, BorderLayout.NORTH); picker.add(new JScrollPane(suggestions), BorderLayout.CENTER);
+        picker.add(filter, BorderLayout.NORTH); picker.add(new PixelScrollPane(suggestions), BorderLayout.CENTER);
         JButton add = UiFactory.button("Add selected tag", null, false);
         add.addActionListener(event -> {
             String selected = suggestions.getSelectedValue();
@@ -124,15 +138,43 @@ final class TrackDetailsPanel extends JPanel {
         if (tracks.size() > 20) details.append("Showing technical details for the first 20 tracks.");
         technical.setText(details.toString()); technical.setCaretPosition(0);
         JTabbedPane tabs = new JTabbedPane();
-        tabs.addTab("Basics", new JScrollPane(basic)); tabs.addTab("Classical / credits", new JScrollPane(classical));
-        tabs.addTab("Tags", tagging); tabs.addTab("Audio file", new JScrollPane(technical));
+        tabs.addTab("Basics", new PixelScrollPane(basic)); tabs.addTab("Classical / credits", new PixelScrollPane(classical));
+        tabs.addTab("Tags", tagging); tabs.addTab("Audio file", new PixelScrollPane(technical));
         var features=profile.features();
         JTextArea analysis=new JTextArea(); analysis.setEditable(false); analysis.setLineWrap(true); analysis.setWrapStyleWord(true); analysis.setFont(Theme.BODY);
         analysis.getAccessibleContext().setAccessibleName("Local audio analysis");
-        analysis.setText((group ? "Analysis of the first selected recording\n\n" : "") + features.summary()
-            + (features.version()>0 ? String.format(Locale.ROOT,"\n\nDecoded passage: %.1f seconds\nRMS: %.1f dBFS · Peak: %.1f dBFS\nEnvelope dynamic range (10–90%%): %.1f dB\nSpectral centroid: %.0f Hz\nArousal: %d/100 · Valence: %d/100\nTempo evidence: %.0f%% · Key evidence: %.0f%%",features.sampledSeconds(),features.rmsDb(),features.peakDb(),features.dynamicRangeDb(),features.centroidHz(),features.arousal(),features.valence(),features.tempoConfidence()*100,features.keyConfidence()*100) : "\n\nUse Deep analyse library on Listen Now to measure supported local recordings.")
-            + "\n\nThese are passage-based estimates. Major/minor key and tempo do not determine emotion. Instrumentation comes from editable metadata; it is not recognized from the audio. Energy and movement can be corrected in Basics. Unsupported decoders leave analysis pending.");
-        analysis.setCaretPosition(0); tabs.addTab("Analysis",new JScrollPane(analysis));
+        String summary = unavailable ? "Audio file unavailable"
+            : profile.failure() == null ? features.summary(first.metadata()) : profile.failure().message();
+        boolean current = features.version() == AudioFeatures.VERSION;
+        int passages = Math.max(1, features.passageCount());
+        var savedKey = first.metadata().fields().get(Field.KEY);
+        String keyDetails = savedKey == null || savedKey.text().isBlank() ? "" : "\nMusical key ("
+            + switch (savedKey.origin()) {
+                case USER -> "edited";
+                case EMBEDDED -> "file tag";
+                case TITLE_HINT -> "title hint";
+                case FOLDER_HINT -> "folder hint";
+                case SCORE_REFERENCE -> "score";
+                case ONLINE -> "online work catalog";
+            } + "): " + MusicalKey.display(savedKey.text());
+        String workKey = MusicalKey.display(first.metadata().text(Field.WORK_KEY));
+        analysis.setText((group ? "Analysis of the first selected recording\n\n" : "") + summary
+            + (current ? "\nTempo estimate: " + features.tempoDescription()
+                + "\nAudio key estimate: " + features.audioKeyDescription() : "")
+            + keyDetails
+            + (workKey.isBlank() ? "" : "\nWork key: " + workKey)
+            + (features.moodTags().isEmpty() ? "" : "\nMood tags: " + String.join(", ", features.moodTags()))
+            + (features.version() > 0
+                ? String.format(Locale.ROOT,
+                    "\n\nAudio sampled: %.1f seconds across %d %s\nRMS: %.1f dBFS · Sample peak: %.1f dBFS"
+                    + "\nEnvelope dynamic range (10–90%%): %.1f dB\nSpectral centroid: %.0f Hz"
+                    + "\nArousal: %d/100",
+                    features.sampledSeconds(), passages, passages == 1 ? "passage" : "passages",
+                    features.rmsDb(), features.peakDb(), features.dynamicRangeDb(), features.centroidHz(),
+                    features.arousal())
+                : unavailable ? "" : "\n\nUse Deep analyse library on Listen Now to measure supported local recordings.")
+            + "\n\nEdit the musical key in Classical / credits. Choose Re-analyse track to review mood tags.");
+        analysis.setCaretPosition(0); tabs.addTab("Analysis",new PixelScrollPane(analysis));
         tabs.setPreferredSize(new Dimension(640, 450)); add(tabs);
     }
     DetailChanges changes() {

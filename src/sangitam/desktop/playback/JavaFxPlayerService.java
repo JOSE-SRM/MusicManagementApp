@@ -25,6 +25,8 @@ public final class JavaFxPlayerService implements PlayerService {
     private MediaPlayer player; // accessed only on the JavaFX application thread
     private volatile double volume = 0.72;
     private volatile Consumer<float[]> spectrum;
+    private volatile long spectrumRevision;
+    private long spectrumAfterSeek;
     private final CoalescedCommand volumeCommand = new CoalescedCommand(this::onAudioThread, () -> { if (!closed && player != null) applyVolume(player); });
     private volatile AudioSettings audioSettings = AudioSettings.defaults();
     private volatile AudioStatus audioStatus = new AudioStatus(AudioStatus.Backend.JAVA_FX, AudioSettings.ReplayGain.OFF, null);
@@ -68,6 +70,7 @@ public final class JavaFxPlayerService implements PlayerService {
         player = null;
         if (old != null) old.dispose();
         lastPositionNotice = 0;
+        spectrumAfterSeek = 0;
         if (!Files.isRegularFile(track.path())) {
             fail(id, track, "File is unavailable. Reconnect its drive or import it from its new location.");
             return;
@@ -157,6 +160,15 @@ public final class JavaFxPlayerService implements PlayerService {
             if (player != null && current.seekable()) {
                 double length = current.durationSeconds();
                 double target = Math.min(Math.max(0, length - 0.001), length * Math.max(0, Math.min(1, fraction)));
+                Consumer<float[]> callback = spectrum;
+                if (callback != null) {
+                    long revision = ++spectrumRevision;
+                    spectrumAfterSeek = System.nanoTime() + 120_000_000L;
+                    SwingUtilities.invokeLater(() -> {
+                        if (!closed && id == request && spectrum == callback && revision == spectrumRevision)
+                            callback.accept(new float[0]);
+                    });
+                }
                 player.seek(Duration.seconds(target));
             }
         });
@@ -178,11 +190,20 @@ public final class JavaFxPlayerService implements PlayerService {
     @Override public void setSpectrumListener(Consumer<float[]> listener) { spectrum = listener; onAudioThread(() -> { if (player != null) applySpectrum(player); }); }
     private void applySpectrum(MediaPlayer target) {
         if (spectrum == null) { target.setAudioSpectrumListener(null); return; }
-        target.setAudioSpectrumNumBands(32); target.setAudioSpectrumThreshold(-72); target.setAudioSpectrumInterval(.1);
+        target.setAudioSpectrumNumBands(SpectrumBands.BAND_COUNT);
+        target.setAudioSpectrumThreshold(-80);
+        target.setAudioSpectrumInterval(.025);
+        long id = request;
         target.setAudioSpectrumListener((timestamp, duration, magnitudes, phases) -> {
-            Consumer<float[]> callback = spectrum; if (callback == null || target != player) return;
+            Consumer<float[]> callback = spectrum;
+            if (callback == null || target != player || state.status() != PlaybackState.Status.PLAYING
+                || (spectrumAfterSeek != 0 && System.nanoTime() - spectrumAfterSeek < 0)) return;
+            long revision = spectrumRevision;
             float[] sample = magnitudes.clone();
-            SwingUtilities.invokeLater(() -> { if (!closed && target == player && spectrum == callback) callback.accept(sample); });
+            SwingUtilities.invokeLater(() -> {
+                if (!closed && id == request && spectrum == callback && revision == spectrumRevision
+                    && state.status() == PlaybackState.Status.PLAYING) callback.accept(sample);
+            });
         });
     }
 

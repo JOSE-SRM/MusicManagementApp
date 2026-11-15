@@ -104,7 +104,7 @@ final class ArtistPanel extends JPanel {
         JTextArea text = new JTextArea(); text.setEditable(false); text.setLineWrap(true); text.setWrapStyleWord(true); text.setOpaque(false); text.setForeground(Theme.TEXT_MUTED); text.setFont(Theme.SMALL);
         boolean lengthy = description.length() > 260; String collapsed = lengthy ? description.substring(0, 260) + "…" : description;
         text.setText(collapsed); text.setRows(4);
-        JScrollPane biographyView = new JScrollPane(text, ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER, ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        JScrollPane biographyView = new PixelScrollPane(text, ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER, ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         biographyView.setBorder(null); biographyView.setOpaque(false); biographyView.getViewport().setOpaque(false); UiFactory.styleScroll(biographyView); bio.add(biographyView);
         if (lengthy) { JButton more = link("Read more", () -> { }); more.addActionListener(event -> {
             boolean expand = more.getText().equals("Read more"); text.setText(expand ? description : collapsed); text.setRows(expand ? Math.min(18, 4 + description.length() / 90) : 4); more.setText(expand ? "Show less" : "Read more");
@@ -145,7 +145,7 @@ final class ArtistPanel extends JPanel {
         heading(content, "Often on the same recordings");
         if (data.collaborators().isEmpty()) addBlock(content, UiFactory.label("Add separate musician credits to discover collaborators.", Theme.SMALL, Theme.TEXT_MUTED));
         for (String partner : data.collaborators()) { String[] parts = partner.split("\u001f"); addBlock(content, link(parts[0] + " · " + parts[1] + " shared tracks", () -> openArtist.accept(parts[0]))); }
-        JScrollPane scroll = new JScrollPane(content); UiFactory.styleScroll(scroll); scroll.setBorder(null); scroll.getVerticalScrollBar().setUnitIncrement(20); scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER); add(scroll); revalidate(); repaint();
+        JScrollPane scroll = new PixelScrollPane(content); UiFactory.styleScroll(scroll); scroll.setBorder(null); scroll.getVerticalScrollBar().setUnitIncrement(20); scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER); add(scroll); revalidate(); repaint();
     }
     private void addSongs(JPanel content, List<Track> tracks, boolean ranked) {
         if (tracks.isEmpty()) { addBlock(content, UiFactory.label("No songs here yet.", Theme.SMALL, Theme.TEXT_MUTED)); return; }
@@ -179,11 +179,18 @@ final class ArtistPanel extends JPanel {
     private void editProfile() {
         String artist = name; ArtistStore.Profile original = profile;
         JTextArea biography = new JTextArea(profile.description(), 10, 48); biography.setLineWrap(true); biography.setWrapStyleWord(true);
-        JPanel editor = new JPanel(new BorderLayout(0, 10)); editor.add(new JScrollPane(biography));
+        JPanel editor = new JPanel(new BorderLayout(0, 10)); editor.add(new PixelScrollPane(biography));
         final Path[] selectedImage = {null}; final boolean[] remove = {false};
         JPanel tools = new JPanel(new FlowLayout(FlowLayout.LEFT));
         JButton image = UiFactory.button("Choose portrait…", null, false), clear = UiFactory.button("Remove portrait", null, false);
-        image.addActionListener(event -> { JFileChooser chooser = new JFileChooser(); chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Portrait images (PNG, JPEG)", "png", "jpg", "jpeg")); if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) { selectedImage[0] = chooser.getSelectedFile().toPath(); remove[0] = false; image.setText("Portrait selected"); } });
+        image.addActionListener(event -> {
+            var files = FileBrowserDialog.chooseFiles(SwingUtilities.getWindowAncestor(this), "Choose portrait", "portraits",
+                "Portrait images (PNG, JPEG)", false, "png", "jpg", "jpeg");
+            if (files.isEmpty()) return;
+            selectedImage[0] = files.getFirst();
+            remove[0] = false;
+            image.setText("Portrait selected");
+        });
         clear.addActionListener(event -> { selectedImage[0] = null; remove[0] = true; image.setText("Choose portrait…"); }); tools.add(image); tools.add(clear); editor.add(tools, BorderLayout.SOUTH);
         if (JOptionPane.showConfirmDialog(this, editor, "Edit " + artist, JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE) != JOptionPane.OK_OPTION) return;
         String description = biography.getText();

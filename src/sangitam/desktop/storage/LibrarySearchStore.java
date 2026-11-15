@@ -37,30 +37,45 @@ public final class LibrarySearchStore {
         synchronized (library) {
             if (!initialized) { library.initialize(); initialized = true; }
         }
-        String from = " FROM tracks t LEFT JOIN track_metadata m ON t.path=m.path WHERE 1=1";
+        String from = """
+             FROM tracks_with_recording_matches t LEFT JOIN track_metadata m ON t.path=m.path
+             LEFT JOIN background_metadata e ON e.path=t.path AND e.metadata_size=t.metadata_size
+                 AND e.metadata_modified=t.metadata_modified WHERE 1=1
+            """;
         if (request.availableOnly()) from += " AND t.unavailable=0";
-        if (request.category() == Category.ALBUMS) from += " AND trim(t.album)<>'' AND lower(t.album)<>'unknown album'";
-        if (request.category() == Category.ARTISTS) from += " AND trim(t.artist)<>'' AND lower(t.artist)<>'unknown artist'";
-        if (!request.text().isEmpty()) from += " AND (m.search_text LIKE ? ESCAPE '\\' OR (m.path IS NULL AND lower(t.title || ' ' || t.artist || ' ' || t.album || ' ' || t.genre) LIKE ? ESCAPE '\\'))";
+        if (request.category() == Category.ALBUMS) from += " AND trim(t.display_album)<>'' AND lower(t.display_album)<>'unknown album'";
+        if (request.category() == Category.ARTISTS) from += " AND trim(t.display_artist)<>'' AND lower(t.display_artist)<>'unknown artist'";
+        if (!request.text().isEmpty()) from += """
+             AND (COALESCE(m.search_text, lower(t.title || ' ' || t.artist || ' ' || t.album || ' ' || t.genre)) LIKE ?1 ESCAPE '\\'
+                  OR (t.enriched AND sangitam_fold(t.display_title || ' ' || t.display_artist || ' ' || t.display_album) LIKE ?1 ESCAPE '\\')
+                  OR EXISTS (SELECT 1 FROM json_each(e.payload) info
+                      WHERE (json_type(m.payload, '$.metadata.fields.' || info.key) IS NULL
+                          OR (json_extract(info.value, '$.origin')='SCORE_REFERENCE'
+                              AND json_extract(m.payload, '$.metadata.fields.' || info.key || '.origin')
+                                  IN ('TITLE_HINT','FOLDER_HINT')))
+                        AND sangitam_fold(json_extract(info.value, '$.text')) LIKE ?1 ESCAPE '\\')
+                  OR EXISTS (SELECT 1 FROM audio_features f, json_each(f.payload, '$.moodTags') tag
+                             WHERE f.path=t.path AND lower(tag.value) LIKE ? ESCAPE '\\'))
+            """;
         String grouping = switch (request.category()) {
             case SONGS -> "";
-            case ALBUMS -> " GROUP BY t.album COLLATE NOCASE,t.artist COLLATE NOCASE";
-            case ARTISTS -> " GROUP BY t.artist COLLATE NOCASE";
+            case ALBUMS -> " GROUP BY t.display_album COLLATE NOCASE,t.display_artist COLLATE NOCASE";
+            case ARTISTS -> " GROUP BY t.display_artist COLLATE NOCASE";
         };
         String recent = request.category() == Category.SONGS ? "MAX(t.added_at,t.last_played_at)" : "MAX(MAX(t.added_at,t.last_played_at))";
         String plays = request.category() == Category.SONGS ? "t.play_count" : "SUM(t.play_count)";
-        String title = request.category() == Category.SONGS ? "t.title" : request.category() == Category.ALBUMS ? "t.album" : "t.artist";
-        String tie = title + " COLLATE NOCASE,t.artist COLLATE NOCASE," + (request.category() == Category.SONGS ? "t.path" : "MIN(t.path)");
+        String title = request.category() == Category.SONGS ? "t.display_title"
+            : request.category() == Category.ALBUMS ? "t.display_album" : "t.display_artist";
+        String tie = title + " COLLATE NOCASE,t.display_artist COLLATE NOCASE," + (request.category() == Category.SONGS ? "t.path" : "MIN(t.path)");
         String sort = switch (request.order()) {
             case RECENT -> recent + " DESC," + tie;
             case ALPHABETICAL -> tie;
             case MOST_PLAYED -> plays + " DESC," + tie;
         };
-        String select = request.category() == Category.SONGS ? "SELECT t.*,m.payload" : "SELECT " + title + " AS title,t.artist,COUNT(*) AS members";
+        String select = request.category() == Category.SONGS ? "SELECT t.*,m.payload,e.payload AS enrichment"
+            : "SELECT " + title + " AS title,t.display_artist AS artist,COUNT(*) AS members";
         try (Connection connection = library.connect()) {
-            org.sqlite.ProgressHandler.setHandler(connection, 1000, new org.sqlite.ProgressHandler() {
-                @Override protected int progress() { return Thread.currentThread().isInterrupted() ? 1 : 0; }
-            });
+            SmartPlaylistStore.prepare(connection);
             connection.setAutoCommit(false); // count and rows refer to the same read snapshot
             long total;
             try (var count = connection.prepareStatement("SELECT COUNT(*) FROM (SELECT 1" + from + grouping + ")")) {
@@ -75,8 +90,9 @@ public final class LibrarySearchStore {
                 try (var row = query.executeQuery()) {
                     while (row.next()) {
                         if (request.category() == Category.SONGS) {
-                            Track track = new Track(Path.of(row.getString("path")), row.getString("title"), row.getString("artist"),
-                                row.getString("album"), row.getDouble("duration_seconds"), row.getString("format"), row.getString("genre"), MetadataStore.decode(row.getString("payload")));
+                            Track track = new Track(Path.of(row.getString("path")), row.getString("display_title"), row.getString("display_artist"),
+                                row.getString("display_album"), row.getDouble("duration_seconds"), row.getString("format"), row.getString("genre"),
+                                MetadataStore.decode(row.getString("payload"), row.getString("enrichment")));
                             hits.add(new Hit(track, track.title(), track.artist(), 1));
                         } else hits.add(new Hit(null, row.getString("title"), request.category() == Category.ARTISTS ? "" : row.getString("artist"), row.getInt("members")));
                     }

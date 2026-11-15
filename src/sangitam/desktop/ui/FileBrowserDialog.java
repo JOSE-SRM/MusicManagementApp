@@ -54,21 +54,55 @@ public final class FileBrowserDialog extends JDialog {
     }
 
     public static List<Path> choose(Window owner) {
+        String pattern = AUDIO_EXTENSIONS.stream().map(extension -> "*." + extension).collect(java.util.stream.Collectors.joining(";"));
+        var nativeFiles = WindowsFilePicker.choose(owner, new WindowsFilePicker.Options(
+            "Choose audio files", "media", "Audio files", pattern, false, true, null, null));
+        if (nativeFiles != null) return nativeFiles;
         FileBrowserDialog dialog = new FileBrowserDialog(owner, "Choose music", false, false, null, null);
         dialog.setVisible(true);
         return dialog.result;
     }
 
     public static Path chooseDirectory(Window owner, String title) {
+        var nativeFolders = WindowsFilePicker.choose(owner, new WindowsFilePicker.Options(
+            title, "folders", null, null, true, false, null, null));
+        if (nativeFolders != null) return nativeFolders.isEmpty() ? null : nativeFolders.getFirst();
         FileBrowserDialog dialog = new FileBrowserDialog(owner, title, true, false, null, null);
         dialog.setVisible(true);
         return dialog.resultPath;
     }
 
     public static Path chooseSaveFile(Window owner, String title, String defaultName, String extension) {
+        String suffix = extension.startsWith(".") ? extension.substring(1) : extension;
+        var nativeFiles = WindowsFilePicker.choose(owner, new WindowsFilePicker.Options(
+            title, "exports", suffix.toUpperCase(Locale.ROOT) + " files", "*." + suffix, false, false, defaultName, suffix));
+        if (nativeFiles != null) return nativeFiles.isEmpty() ? null : nativeFiles.getFirst();
         FileBrowserDialog dialog = new FileBrowserDialog(owner, title, true, true, defaultName, extension);
         dialog.setVisible(true);
         return dialog.resultPath;
+    }
+
+    static List<Path> chooseFolders(Window owner, String title) {
+        var nativeFolders = WindowsFilePicker.choose(owner, new WindowsFilePicker.Options(
+            title, "media-folders", null, null, true, true, null, null));
+        if (nativeFolders != null) return nativeFolders;
+        Path folder = chooseDirectory(owner, title);
+        return folder == null ? List.of() : List.of(folder);
+    }
+
+    static List<Path> chooseFiles(Window owner, String title, String history, String label, boolean multiple, String... extensions) {
+        String pattern = Arrays.stream(extensions).map(extension -> "*." + extension).collect(java.util.stream.Collectors.joining(";"));
+        var nativeFiles = WindowsFilePicker.choose(owner, new WindowsFilePicker.Options(
+            title, history, label, pattern, false, multiple, null, null));
+        if (nativeFiles != null) return nativeFiles;
+        var dialog = history.equals("score") ? new JFileChooser(WindowsFilePicker.downloads().toFile()) : new JFileChooser();
+        dialog.setDialogTitle(title);
+        dialog.setMultiSelectionEnabled(multiple);
+        dialog.setAcceptAllFileFilterUsed(false);
+        dialog.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter(label, extensions));
+        if (dialog.showOpenDialog(owner) != JFileChooser.APPROVE_OPTION) return List.of();
+        return multiple ? Arrays.stream(dialog.getSelectedFiles()).map(File::toPath).toList()
+            : List.of(dialog.getSelectedFile().toPath());
     }
 
     private JComponent buildContent() {
@@ -117,7 +151,7 @@ public final class FileBrowserDialog extends JDialog {
                     && entries.getCellBounds(index, index).contains(event.getPoint())) openSelection();
             }
         });
-        root.add(new JScrollPane(entries), BorderLayout.CENTER);
+        root.add(new PixelScrollPane(entries), BorderLayout.CENTER);
 
         String hintText = saveMode ? "Choose the destination folder, then enter a file name."
             : directoryOnly ? "Choose a folder for the export."

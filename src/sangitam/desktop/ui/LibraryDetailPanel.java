@@ -85,7 +85,7 @@ final class LibraryDetailPanel extends JPanel {
             Rectangle row = songs.getCellBounds(index, index);
             trackMenu.apply(model.get(index)).show(songs, 12, row.y + row.height);
         });
-        JScrollPane scroll = new JScrollPane(songs, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+        JScrollPane scroll = new PixelScrollPane(songs, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
             ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         scroll.setBorder(UiFactory.roundedBorder(Theme.DIVIDER, 12));
         add(scroll, BorderLayout.CENTER);

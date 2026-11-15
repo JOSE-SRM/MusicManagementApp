@@ -20,7 +20,8 @@ class ArtistPageDataTest {
         assertTrue(ArtistCredits.features(songs.getFirst(), " bach, JOHANN SEBASTIAN ")); assertFalse(ArtistCredits.features(songs.getFirst(), "Bach"));
         var counts = new HashMap<Path, Integer>(); for (int i = 0; i < songs.size(); i++) counts.put(songs.get(i).path(), i);
         var catalog = new LibraryService.Catalog(songs, Map.of(), counts);
-        var organization = new LibraryCollections(List.of(), List.of(), Set.of(new Key(Kind.SONG, songs.get(2).path().toString())));
+        var organization = new LibraryCollections(List.of(), List.of(),
+            Set.of(new Key(Kind.SONG, songs.get(3).path().toString())), Set.of(songs.get(2).path()), Set.of());
         var result = ArtistPageData.build("Conductor", catalog, organization, Map.of(songs.getFirst().path(), 92d, songs.get(1).path(), 8d));
         assertEquals(15, result.tracks().size()); assertEquals(10, result.popular().size()); assertEquals(songs.getLast(), result.popular().getFirst());
         assertEquals(List.of(songs.get(2)), result.liked()); assertEquals(5, result.albums().size()); assertEquals(3, result.albums().getFirst().tracks().size());

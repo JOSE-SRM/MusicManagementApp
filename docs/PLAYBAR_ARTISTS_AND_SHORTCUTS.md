@@ -41,9 +41,9 @@ Volume uses a separate app_state value. Changes submit audio commands immediatel
 
 ## 5. Keep EQ and spectrum honest
 
-[AudioSettingsPanel](../src/sangitam/desktop/ui/AudioSettingsPanel.java) owns testable controls, live preview, Save, and Cancel. [AudioSettingsDialog](../src/sangitam/desktop/ui/AudioSettingsDialog.java) supplies the modal window. Bands and preamp stay interactive while bypassed; moving one turns EQ on. Programmatic load/reset uses an updating guard so it does not accidentally enable EQ. Presets enable EQ explicitly. Save writes preferences on a worker; Cancel drops pending preview edits and restores the original curve. ReplayGain remains Save-only and is explained in the question-mark tooltip. The playbar mini curve shows saved settings.
+[AudioSettingsPanel](../src/sangitam/desktop/ui/AudioSettingsPanel.java) owns the controls, live preview, Save, and Cancel. [AudioSettingsDialog](../src/sangitam/desktop/ui/AudioSettingsDialog.java) is a single modeless window, so the main window and transport remain available during preview. Moving a band or preamp turns EQ on. Save writes preferences on a worker. Cancel drops pending preview edits and restores the saved curve. ReplayGain applies after Save at the next track start. The playbar mini curve shows saved settings.
 
-The optional [SpectrumPanel](../src/sangitam/desktop/ui/SpectrumPanel.java) consumes real JavaFX magnitudes copied before delivery to Swing. Requests detach when hidden, callbacks reject an obsolete player/listener, and pause/stop clears old bars. The current VLC adapter has no sample feed and shows an explicit unsupported message. It does not animate random bars or replace VLC's audio output to obtain samples. VLC spectrum and live native audio measurements remain open.
+The optional [SpectrumPanel](../src/sangitam/desktop/ui/SpectrumPanel.java) receives JavaFX magnitudes or time-aligned, pre-effects VLC bands. [VlcSpectrum](../src/sangitam/desktop/playback/VlcSpectrum.java) uses PCM from a separate silent decoder. Requests detach when hidden, and pause, seek, or stop clears old bars.
 
 ## 6. Connect Windows without duplicating controls
 
@@ -85,4 +85,4 @@ Recently Played, library sorting, and player visibility menu commands now invoke
 
 Tests cover clickable priority credits, all three times, separate pause bars, seek-on-release, EQ auto-enable/Save/Cancel, offline portrait persistence after deleting the source, biography expansion, artist playback/album routing, rankings/likes/collaborators, elapsed-time measurement, attribution after removal, volume persistence, repeated queue positions, coalesced commands, Unicode IPC, shortcut persistence/conflicts/capture/reset, and actual menu routing. UI tests create and paint components in memory; their preview PNGs under target are not desktop screenshots. Native audio integration and the scale benchmark remain opt-in.
 
-Remaining boundaries include database-backed General/Locations, VLC spectrum, crossfade and gapless work, provider and analytics extensions, and release packaging. Start from the handoff and verify local behavior before expanding scope.
+Remaining boundaries include database-backed General/Locations, crossfade and gapless work, provider extensions, and release packaging. Start from the handoff and verify local behavior before expanding scope.

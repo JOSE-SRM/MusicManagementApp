@@ -70,7 +70,7 @@ public final class SessionQueuePanel extends JPanel {
             private static final long serialVersionUID = 1L;
             @Override public void actionPerformed(java.awt.event.ActionEvent event) { playSelected(); }
         });
-        JScrollPane scroll = new JScrollPane(list);
+        JScrollPane scroll = new PixelScrollPane(list);
         UiFactory.styleScroll(scroll);
         scroll.setBorder(UiFactory.roundedBorder(Theme.DIVIDER, 10));
         add(scroll, BorderLayout.CENTER);
@@ -133,7 +133,7 @@ public final class SessionQueuePanel extends JPanel {
     private void rate(int rating) { var choice=list.getSelectedValue();if(choice!=null)actions.taste(choice.track(),rating); }
     private void addRecording() {
         JTextField query=new JTextField();DefaultListModel<Track> matches=new DefaultListModel<>();JList<Track> results=new JList<>(matches);results.setCellRenderer(new TrackCellRenderer());
-        JPanel picker=new JPanel(new BorderLayout(0,8));picker.add(query,BorderLayout.NORTH);picker.add(new JScrollPane(results));picker.setPreferredSize(new Dimension(500,330));
+        JPanel picker=new JPanel(new BorderLayout(0,8));picker.add(query,BorderLayout.NORTH);picker.add(new PixelScrollPane(results));picker.setPreferredSize(new Dimension(500,330));
         final SwingWorker<?,?>[] pending={null};
         Runnable filter=()->{if(pending[0]!=null)pending[0].cancel(true);String text=LibraryEntry.lower(query.getText());pending[0]=new SwingWorker<List<Track>,Void>(){protected List<Track> doInBackground(){return available.stream().filter(t->LibraryEntry.lower(t.toString()).contains(text)).limit(100).toList();}protected void done(){if(isCancelled()||pending[0]!=this)return;try{matches.clear();matches.addAll(get());}catch(Exception ignored){}}};pending[0].execute();};
         LibraryPanel.listen(query,filter);filter.run();

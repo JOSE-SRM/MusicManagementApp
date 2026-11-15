@@ -32,6 +32,10 @@ public final class VlcjPlayerService implements PlayerService {
     private volatile JavaFxPlayerService fallback;
     private volatile double volume = 0.72;
     private volatile Consumer<float[]> spectrum;
+    private volatile VlcSpectrum nativeSpectrum;
+    private volatile VlcSpectrum.Position spectrumPosition;
+    private long spectrumSeekUntil;
+    private long spectrumSeekTarget;
     private final CoalescedCommand volumeCommand = new CoalescedCommand(commands, () -> {
         if (closed) return;
         if (fallback != null) fallback.setVolume(volume);
@@ -44,6 +48,7 @@ public final class VlcjPlayerService implements PlayerService {
     private MediaPlayerFactory factory;
     private boolean nativeUnavailable;
     private MediaPlayer player;
+    private VlcLocalMedia mediaInput;
     private long activeRequest;
     private boolean foundAudioStream;
     private AudioSettings.ReplayGain factoryReplayGain;
@@ -93,14 +98,18 @@ public final class VlcjPlayerService implements PlayerService {
             fallback.play(track, startSeconds);
             return;
         }
+        spectrumPosition = null;
+        invalidateSpectrum();
         double start = Math.max(0, startSeconds);
         publish(id, new PlaybackState(track, LOADING, start, track.durationSeconds(), null, false));
+        spectrumPosition = new VlcSpectrum.Position(track.path(), start, System.nanoTime(), id, false);
         commands.execute(() -> open(id, track, start));
     }
 
     private void open(long id, Track track, double startSeconds) {
         if (id != request || closed) return;
         try {
+            spectrumSeekUntil = 0;
             releasePlayer();
             if (!Files.isRegularFile(track.path())) {
                 fail(id, track, "File is unavailable. Reconnect its drive or import it from its new location.");
@@ -135,8 +144,14 @@ public final class VlcjPlayerService implements PlayerService {
                 }
             });
             applyEqualizer(next);
-            if (!next.media().play(track.path().toUri().toString(), ":no-video", ":no-sub-autodetect-file",
-                ":start-time=" + startSeconds)) {
+            // VLCJ opens a filesystem path directly. LibVLC can misread non-ASCII
+            // filenames in the unescaped Unicode returned by URI.toString().
+            if (startSeconds >= .35) {
+                spectrumSeekTarget = Math.round(startSeconds * 1000);
+                spectrumSeekUntil = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(850);
+            }
+            mediaInput = new VlcLocalMedia(track.path());
+            if (!mediaInput.play(next, startSeconds)) {
                 decodeError(id, track);
             }
             // libVLC's audio output is not necessarily available until the playing state.
@@ -174,6 +189,12 @@ public final class VlcjPlayerService implements PlayerService {
             long length = player.status().length();
             boolean seekable = length > 0 && player.status().isSeekable();
             long time = player.status().time();
+            long now = System.nanoTime();
+            if (spectrumSeekUntil != 0 && (Math.abs(time - spectrumSeekTarget) <= 350 || now - spectrumSeekUntil >= 0))
+                spectrumSeekUntil = 0;
+            if (nativeSpectrum != null && status == PLAYING && time >= 0 && spectrumSeekUntil == 0) {
+                spectrumPosition = new VlcSpectrum.Position(current.track().path(), time / 1000.0, now, id, true);
+            } else if (status == PAUSED) spectrumPosition = null;
             publish(id, new PlaybackState(current.track(), status,
                 time >= 0 ? time / 1000.0 : current.positionSeconds(),
                 length > 0 ? length / 1000.0 : current.durationSeconds(), null, seekable));
@@ -192,6 +213,7 @@ public final class VlcjPlayerService implements PlayerService {
         alternate.play(track, startSeconds);
         alternate.setListener(listener);
         fallback = alternate;
+        closeNativeSpectrum();
     }
 
     @Override public void pause() {
@@ -227,7 +249,15 @@ public final class VlcjPlayerService implements PlayerService {
             if (player == null || !state.seekable()) return;
             long length = player.status().length();
             if (length > 0 && player.status().isSeekable()) {
-                player.controls().setTime(Math.min(length - 1, Math.round(length * bounded)));
+                long target = Math.min(length - 1, Math.round(length * bounded));
+                if (nativeSpectrum != null) {
+                    spectrumSeekTarget = target;
+                    long now = System.nanoTime();
+                    spectrumSeekUntil = now + TimeUnit.MILLISECONDS.toNanos(550);
+                    spectrumPosition = new VlcSpectrum.Position(state.track().path(), target / 1000.0, now, id, false);
+                    invalidateSpectrum();
+                }
+                player.controls().setTime(target);
             }
         });
     }
@@ -252,8 +282,48 @@ public final class VlcjPlayerService implements PlayerService {
     @Override public double maximumVolume() {
         return audioStatus().backend() == AudioStatus.Backend.JAVA_FX ? 1 : AudioGain.MAX_VOLUME;
     }
-    @Override public boolean supportsSpectrum() { return fallback != null && fallback.supportsSpectrum(); }
-    @Override public void setSpectrumListener(Consumer<float[]> listener) { spectrum = listener; if (fallback != null) fallback.setSpectrumListener(listener); }
+    @Override public boolean supportsSpectrum() {
+        if (fallback != null) return fallback.supportsSpectrum();
+        VlcSpectrum analyzer = nativeSpectrum;
+        Track current = state.track();
+        return audioStatus.backend() == AudioStatus.Backend.VLC
+            && (analyzer == null || current == null || analyzer.availableFor(current.path()));
+    }
+
+    @Override public synchronized void setSpectrumListener(Consumer<float[]> listener) {
+        if (closed) return;
+        spectrum = listener;
+        closeNativeSpectrum();
+        if (fallback != null) fallback.setSpectrumListener(listener);
+        else if (listener != null) {
+            if (state.status() == PLAYING) spectrumPosition = null;
+            nativeSpectrum = new VlcSpectrum(this::spectrumState, listener);
+        }
+    }
+
+    private VlcSpectrum.Position spectrumState() {
+        VlcSpectrum.Position position = spectrumPosition;
+        PlaybackState current = state;
+        if (closed || audioStatus.backend() != AudioStatus.Backend.VLC || position == null
+            || position.request() != request || current.track() == null
+            || !position.path().equals(current.track().path())) return null;
+        long age = System.nanoTime() - position.observedNanos();
+        if (position.confirmed())
+            return current.status() == PLAYING && age < TimeUnit.MILLISECONDS.toNanos(350) ? position : null;
+        return (current.status() == PLAYING || current.status() == LOADING)
+            && age < TimeUnit.MILLISECONDS.toNanos(1500) ? position : null;
+    }
+
+    private void invalidateSpectrum() {
+        VlcSpectrum analyzer = nativeSpectrum;
+        if (analyzer != null) analyzer.invalidate();
+    }
+
+    private void closeNativeSpectrum() {
+        VlcSpectrum old = nativeSpectrum;
+        nativeSpectrum = null;
+        if (old != null) old.close();
+    }
 
     private void applyEqualizer(MediaPlayer target) {
         try {
@@ -315,7 +385,7 @@ public final class VlcjPlayerService implements PlayerService {
     }
 
     private void decodeError(long id, Track track) {
-        fail(id, track, "VLC could not decode this track. Check that the file plays in VLC.");
+        fail(id, track, "VLC could not open or decode this track. Check the file and the VLC installation.");
     }
 
     private void fail(long id, Track track, String message) {
@@ -336,13 +406,17 @@ public final class VlcjPlayerService implements PlayerService {
         player = null;
         if (old != null) {
             try { old.controls().stop(); }
-            finally { old.release(); }
+            finally {
+                try { old.release(); }
+                finally { mediaInput = null; }
+            }
         }
     }
 
     @Override public synchronized void close() {
         if (closed) return;
         closed = true;
+        closeNativeSpectrum();
         if (fallback != null) fallback.close();
         commands.execute(() -> {
             try { releasePlayer(); }

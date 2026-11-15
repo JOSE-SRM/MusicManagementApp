@@ -21,9 +21,11 @@ public final class ImportMediaDialog extends JDialog {
     private final JLabel status = UiFactory.label("MP3, WAV, FLAC, OGG, AAC, M4A, AIFF, and WMA are supported.", Theme.SMALL, Theme.TEXT_MUTED);
     private final JProgressBar progress = new JProgressBar();
     private final JTextArea details = new JTextArea(3, 40);
-    private final JScrollPane detailScroll = new JScrollPane(details);
+    private final JScrollPane detailScroll = new PixelScrollPane(details);
     private final JButton start = UiFactory.button("Import music", AppIcons.of(AppIcons.Kind.NEXT, 15, Theme.BLACK), true);
-    private final JButton browse = UiFactory.button("Browse…", AppIcons.of(AppIcons.Kind.FOLDER, 15), false);
+    private final JButton browse = UiFactory.button("Files…", AppIcons.of(AppIcons.Kind.MUSIC, 15), false);
+    private final JButton folders = UiFactory.button("Folders…", AppIcons.of(AppIcons.Kind.FOLDER, 15), false);
+    private final JButton clear = UiFactory.button("Clear", null, false);
     private final JButton close = UiFactory.button("Close", null, false);
     private List<Path> selectedItems = List.of();
 
@@ -78,8 +80,20 @@ public final class ImportMediaDialog extends JDialog {
         selectedPath.setBorder(BorderFactory.createCompoundBorder(
             UiFactory.roundedBorder(Theme.DIVIDER, 10), Theme.padding(9, 12, 9, 12)));
         chooserRow.add(selectedPath, BorderLayout.CENTER);
-        browse.addActionListener(event -> browse());
-        chooserRow.add(browse, BorderLayout.EAST);
+        browse.addActionListener(event -> browse(FileBrowserDialog.choose(this)));
+        folders.addActionListener(event -> browse(FileBrowserDialog.chooseFolders(this, "Choose music folders")));
+        JPanel pickers = new JPanel(new FlowLayout(FlowLayout.TRAILING, 5, 0));
+        pickers.setOpaque(false);
+        clear.setEnabled(false);
+        clear.addActionListener(event -> {
+            selectedItems = List.of();
+            selectedPath.setText("No file or folder selected");
+            clear.setEnabled(false);
+        });
+        pickers.add(clear);
+        pickers.add(browse);
+        pickers.add(folders);
+        chooserRow.add(pickers, BorderLayout.EAST);
         form.add(chooserRow, BorderLayout.NORTH);
         includeSubfolders.setOpaque(false);
         includeSubfolders.setFont(Theme.BODY);
@@ -120,12 +134,14 @@ public final class ImportMediaDialog extends JDialog {
         return root;
     }
 
-    private void browse() {
-        List<Path> selection = FileBrowserDialog.choose(this);
+    private void browse(List<Path> selection) {
         if (selection.isEmpty()) return;
-        selectedItems = selection;
-        if (selectedItems.size() == 1) selectedPath.setText(selectedItems.get(0).toString());
+        var items = new java.util.LinkedHashSet<>(selectedItems);
+        items.addAll(selection);
+        selectedItems = List.copyOf(items);
+        if (selectedItems.size() == 1) selectedPath.setText(selectedItems.getFirst().toString());
         else selectedPath.setText(selectedItems.size() + " items selected");
+        clear.setEnabled(true);
     }
 
     private void beginImport() {
@@ -136,6 +152,8 @@ public final class ImportMediaDialog extends JDialog {
         }
         List<Path> sources = selectedItems;
         browse.setEnabled(false);
+        folders.setEnabled(false);
+        clear.setEnabled(false);
         start.setEnabled(false);
         progress.setIndeterminate(true);
         progress.setVisible(true);

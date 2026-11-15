@@ -9,8 +9,11 @@ import org.jaudiotagger.tag.id3.ID3v1Tag;
 import org.jaudiotagger.tag.id3.ID3v24Tag;
 import sangitam.desktop.model.FileStamp;
 import sangitam.desktop.model.Track;
+import sangitam.desktop.model.TrackTags;
+import sangitam.desktop.model.TrackMetadata;
 import sangitam.desktop.session.SessionPlanner;
 import sangitam.desktop.storage.LibraryStore;
+import sangitam.desktop.storage.LibrarySearchStore;
 
 import javax.swing.SwingUtilities;
 import javax.sound.sampled.AudioFileFormat;
@@ -20,6 +23,7 @@ import javax.sound.sampled.AudioSystem;
 import java.io.ByteArrayInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -33,6 +37,185 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Exercises the full scan → SQLite → Swing update path, including a fresh service instance. */
 class LibraryServiceTest {
     @TempDir Path folder;
+
+    @Test void managedActivationAndRefilingPreserveCatalogRelationshipsAndAvoidSourceDuplicates() throws Exception {
+        Path sourceFolder = Files.createDirectory(folder.resolve("Originals"));
+        Path original = writeWav(sourceFolder.resolve("Mozart - Piano Sonata K. 545 - 1. Allegro.wav"), 1);
+        Path root = folder.resolve("Managed");
+        var store = new LibraryStore(folder.resolve("managed.db"));
+        var service = new LibraryService(store);
+        assertEquals(1, scan(service, List.of(sourceFolder), true).added());
+        store.savePlaylist("Sonatas", List.of(original));
+        new sangitam.desktop.storage.CollectionStore(store).setLiked(original, true);
+        store.savePlaybackMemory(new sangitam.desktop.model.PlaybackMemory(original, .3));
+        var settings = new ManagedLibraryCopy.Settings(root, ManagedLibraryCopy.Policy.COPY,
+            new ManagedLibraryCopy.Options(true, true, true, false, true, false, ManagedLibraryCopy.Layout.FORMS), false);
+        var activated = new CompletableFuture<LibraryService.ImportSummary>();
+        service.activateManaged(settings, List.of(), true, ignored -> { }, activated::complete,
+            error -> activated.completeExceptionally(new IllegalStateException(error)));
+        assertTrue(activated.get(20, TimeUnit.SECONDS).errors().isEmpty());
+        Track first = service.snapshot().getFirst();
+        assertTrue(first.path().startsWith(root));
+        assertTrue(first.path().toString().contains("Wolfgang Amadeus Mozart"), first.path().toString());
+        assertTrue(first.path().toString().contains("Sonata"), first.path().toString());
+        assertEquals(1, store.loadAll().size());
+        assertEquals(List.of(first.path()), store.loadPlaylists().getFirst().tracks());
+        assertEquals(first.path(), store.loadPlaybackMemory().path());
+        assertTrue(new sangitam.desktop.storage.CollectionStore(store).load().likes().contains(first.path()));
+        assertEquals(-1, Files.mismatch(original, first.path()));
+        Path second = writeWav(sourceFolder.resolve("Haydn - Symphony No. 94.wav"), 1);
+        assertEquals(1, scan(service, List.of(), false).added());
+        assertEquals(2, service.snapshot().size());
+        assertNotNull(service.catalog().currentTrack(second));
+        assertEquals(0, scan(service, List.of(), false).added());
+        assertEquals(2, store.loadAll().size());
+
+        var edit = new CompletableFuture<String>();
+        service.editDetails(List.of(first.path()), new LibraryStore.DetailChanges(null, null, null, null, null, null,
+            Map.of(TrackMetadata.Field.WORK, "Revised work folder"), null), edit::complete);
+        assertEquals("Track details saved", edit.get(20, TimeUnit.SECONDS));
+        Path relocated = service.catalog().currentTrack(original).path();
+        assertTrue(relocated.toString().contains("Revised work folder"), relocated.toString());
+        assertFalse(Files.exists(first.path()));
+        assertEquals(-1, Files.mismatch(original, relocated));
+        assertEquals(List.of(relocated), store.loadPlaylists().getFirst().tracks());
+        assertEquals(relocated, store.loadPlaybackMemory().path());
+        assertTrue(new sangitam.desktop.storage.CollectionStore(store).load().likes().contains(relocated));
+        var reopened = new LibraryService(new LibraryStore(folder.resolve("managed.db")));
+        assertEquals(0, scan(reopened, List.of(), false).added());
+        assertEquals(2, reopened.snapshot().size());
+        assertEquals(relocated, reopened.catalog().currentTrack(original).path());
+        assertEquals(relocated, reopened.catalog().locations().paths().get(original));
+    }
+
+    @Test void writeTagsChangesTheManagedFileAndLeavesTheOriginalBytesIntact() throws Exception {
+        Path original = folder.resolve("original.flac");
+        try (var fixture = getClass().getResourceAsStream("/audio/tone-16-mono.flac")) {
+            Files.copy(fixture, original);
+        }
+        byte[] untouched = Files.readAllBytes(original);
+        var store = new LibraryStore(folder.resolve("tagging.db"));
+        var service = new LibraryService(store);
+        var settings = new ManagedLibraryCopy.Settings(folder.resolve("Managed"), ManagedLibraryCopy.Policy.COPY,
+            new ManagedLibraryCopy.Options(false, false, false, false, false, false, ManagedLibraryCopy.Layout.SIMPLE), true);
+        var activated = new CompletableFuture<LibraryService.ImportSummary>();
+        service.activateManaged(settings, List.of(original), false, ignored -> { }, activated::complete,
+            error -> activated.completeExceptionally(new IllegalStateException(error)));
+        assertTrue(activated.get(20, TimeUnit.SECONDS).errors().isEmpty());
+        var edited = new CompletableFuture<String>();
+        service.editDetails(List.of(service.snapshot().getFirst().path()),
+            new LibraryStore.DetailChanges("Étude in B♭", null, "Managed album", null, null, null), edited::complete);
+        assertEquals("Track details saved", edited.get(20, TimeUnit.SECONDS));
+        Path target = service.snapshot().getFirst().path();
+        assertEquals("Étude in B♭.flac", target.getFileName().toString());
+        var tags = AudioFileIO.read(target.toFile()).getTag();
+        assertEquals("Étude in B♭", tags.getFirst(FieldKey.TITLE));
+        assertEquals("Managed album", tags.getFirst(FieldKey.ALBUM));
+        assertArrayEquals(untouched, Files.readAllBytes(original));
+    }
+
+    @Test void managedTagWriterCanReplaceMp3TitleWithoutChangingEncodedAudio() throws Exception {
+        Path path = folder.resolve("managed.mp3");
+        try (var fixture = getClass().getResourceAsStream("/audio/proof.mp3")) {
+            Files.copy(fixture, path);
+        }
+        var track = new Track(path, "Étude in F♯", "Unknown artist", "Unknown album", 1, "MP3");
+        assertTrue(ManagedAudioTags.write(track));
+        assertEquals("Étude in F♯", AudioFileIO.read(path.toFile()).getTag().getFirst(FieldKey.TITLE));
+        assertFalse(ManagedAudioTags.write(track));
+    }
+
+    @Test void managedRepairRestoresMissingCopiesAndLegacyPlaylistPathsWithoutChangingTheirOrder() throws Exception {
+        Path originals = Files.createDirectory(folder.resolve("Originals"));
+        Path first = writeWav(originals.resolve("Sonata in F Minor.wav"), 1);
+        Path second = writeWav(originals.resolve("Rondo in E Major.wav"), 1);
+        Path removed = writeWav(originals.resolve("Adagio.wav"), 1);
+        Path database = folder.resolve("repair.db");
+        Path root = folder.resolve("Managed");
+        var store = new LibraryStore(database);
+        var service = new LibraryService(store);
+        var settings = new ManagedLibraryCopy.Settings(root, ManagedLibraryCopy.Policy.COPY,
+            new ManagedLibraryCopy.Options(false, false, false, false, false, false, ManagedLibraryCopy.Layout.SIMPLE), false);
+        var activated = new CompletableFuture<LibraryService.ImportSummary>();
+        service.activateManaged(settings, List.of(originals), false, ignored -> { }, activated::complete,
+            error -> activated.completeExceptionally(new IllegalStateException(error)));
+        assertEquals(3, activated.get(20, TimeUnit.SECONDS).indexed());
+        Path managedFirst = service.catalog().currentTrack(first).path();
+        Path managedSecond = service.catalog().currentTrack(second).path();
+        Path managedRemoved = service.catalog().currentTrack(removed).path();
+        var tags = service.catalog().tagsFor(service.catalog().currentTrack(first));
+        store.updateDetails(List.of(managedFirst), new LibraryStore.DetailChanges("My sonata", null, null, null, 20, 40,
+            Map.of(TrackMetadata.Field.COMPOSER, "My saved composer"), Set.of("My tag")));
+        store.recordPlay(managedFirst);
+        store.removeFromLibrary(List.of(managedRemoved), null);
+        Files.delete(managedRemoved);
+        Files.delete(managedFirst);
+        Path legacy = folder.resolve("Former playlist folder");
+        Path oldFirst = legacy.resolve(first.getFileName());
+        Path oldSecond = legacy.resolve(second.getFileName());
+        Path unknown = legacy.resolve("Unmatched.wav");
+        store.savePlaylist("Old list", List.of(oldFirst, oldSecond, oldFirst, unknown));
+        new sangitam.desktop.storage.CollectionStore(store).setLiked(oldFirst, true);
+        try (var connection = java.sql.DriverManager.getConnection("jdbc:sqlite:" + database);
+             var statement = connection.prepareStatement("INSERT INTO library_exclusions(path) VALUES(?)")) {
+            statement.setString(1, root.toString());
+            statement.executeUpdate();
+        }
+
+        var reopened = new LibraryService(new LibraryStore(database));
+        var completion = new CompletableFuture<LibraryService.ImportSummary>();
+        reopened.repairManaged(ignored -> { }, completion::complete,
+            error -> completion.completeExceptionally(new IllegalStateException(error)));
+        assertEquals(0, completion.get(20, TimeUnit.SECONDS).unavailable());
+        assertEquals(List.of(managedFirst, managedSecond, managedFirst, unknown), store.loadPlaylists().getFirst().tracks());
+        assertTrue(new sangitam.desktop.storage.CollectionStore(store).load().likes().contains(managedFirst));
+        assertEquals(-1, Files.mismatch(first, managedFirst));
+        assertFalse(Files.exists(managedRemoved));
+        var recovered = reopened.catalog().currentTrack(managedFirst);
+        assertEquals("My sonata", recovered.title());
+        assertEquals("My saved composer", recovered.metadata().text(TrackMetadata.Field.COMPOSER));
+        assertEquals(Set.of("My tag"), recovered.metadata().tags());
+        assertEquals(20, reopened.catalog().tagsFor(recovered).energy());
+        assertEquals(tags.features(), reopened.catalog().tagsFor(recovered).features());
+        assertEquals(1, reopened.catalog().playsFor(recovered));
+        assertEquals(recovered, reopened.catalog().currentTrack(oldFirst));
+        assertEquals(0, scan(reopened, List.of(), false).unavailable());
+    }
+
+    @Test void managedRepairMergesWindowsCaseVariantsAndCarriesBothRecords() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(System.getProperty("os.name", "").startsWith("Windows"));
+        Path source = writeWav(folder.resolve("music.wav"), 1);
+        var store = new LibraryStore(folder.resolve("cases.db"));
+        var service = new LibraryService(store);
+        var settings = new ManagedLibraryCopy.Settings(folder.resolve("Managed"), ManagedLibraryCopy.Policy.COPY,
+            new ManagedLibraryCopy.Options(false, false, false, false, false, false, ManagedLibraryCopy.Layout.SIMPLE), false);
+        var activated = new CompletableFuture<LibraryService.ImportSummary>();
+        service.activateManaged(settings, List.of(source), false, ignored -> { }, activated::complete,
+            error -> activated.completeExceptionally(new IllegalStateException(error)));
+        assertEquals(1, activated.get(20, TimeUnit.SECONDS).indexed());
+        Track track = service.snapshot().getFirst();
+        Path target = track.path();
+        Path duplicate = target.resolveSibling("MUSIC.WAV");
+        org.junit.jupiter.api.Assumptions.assumeTrue(Files.exists(duplicate));
+        store.saveAll(List.of(new Track(duplicate, track.title(), track.artist(), track.album(),
+            track.durationSeconds(), track.format(), track.genre())));
+        store.updateDetails(List.of(duplicate), new LibraryStore.DetailChanges("Saved title", null, null, null, 26, 34,
+            Map.of(TrackMetadata.Field.COMPOSER, "Saved composer"), Set.of("Saved tag")));
+        store.savePlaylist("Both paths", List.of(duplicate, target, duplicate));
+        assertEquals(2, store.loadAll().size());
+        var repaired = new CompletableFuture<LibraryService.ImportSummary>();
+        service.repairManaged(ignored -> { }, repaired::complete,
+            error -> repaired.completeExceptionally(new IllegalStateException(error)));
+        assertEquals(0, repaired.get(20, TimeUnit.SECONDS).unavailable());
+        assertEquals(1, store.loadAll().size());
+        var saved = store.loadAll().getFirst();
+        assertEquals(target.toString(), saved.path().toString());
+        assertEquals("Saved title", saved.title());
+        assertEquals("Saved composer", saved.metadata().text(TrackMetadata.Field.COMPOSER));
+        assertEquals(Set.of("Saved tag"), saved.metadata().tags());
+        assertEquals(List.of(target.toString(), target.toString(), target.toString()), store.loadPlaylists().getFirst()
+            .tracks().stream().map(Path::toString).toList());
+    }
 
     @Test void importIsSavedAndPublishedOnSwingThread() throws Exception {
         Path audio = folder.resolve("proof.mp3");
@@ -128,6 +311,51 @@ class LibraryServiceTest {
         assertTrue(reopened.catalog().unavailable().isEmpty());
     }
 
+    @Test void rescanMeasuresReplacedFlacAndKeepsRatings() throws Exception {
+        Path audio = folder.resolve("test.flac");
+        byte[] original;
+        try (var source = getClass().getResourceAsStream("/audio/tone-16-mono.flac")) {
+            assertNotNull(source);
+            original = source.readAllBytes();
+        }
+        Files.write(audio, Arrays.copyOf(original, original.length - 100));
+        LibraryStore store = new LibraryStore(folder.resolve("data/library.db"));
+        LibraryService service = new LibraryService(store);
+        assertEquals(1, scan(service, List.of(audio), false).unanalyzed());
+        var failed = service.catalog().tagsFor(service.snapshot().getFirst());
+        assertEquals(TrackTags.Failure.DAMAGED_FLAC, failed.failure());
+        store.updateTags(audio.toRealPath(), "Classical", 31, 26, failed.fileSize(), failed.modifiedMillis());
+        Files.write(audio, original);
+
+        assertEquals(0, scan(service, List.of(), false).unanalyzed());
+        var measured = service.catalog().tagsFor(service.snapshot().getFirst());
+        assertNull(measured.failure());
+        assertEquals(0.5, measured.features().sampledSeconds(), 0.01);
+        assertEquals(31, measured.energy());
+        assertEquals(26, measured.activity());
+    }
+
+    @Test void cancelledAnalysisReportsCancellationAndCanBeRestarted() throws Exception {
+        Path audio = folder.resolve("test.flac");
+        try (var source = getClass().getResourceAsStream("/audio/tone-16-mono.flac")) {
+            assertNotNull(source);
+            Files.copy(source, audio);
+        }
+        var service = new LibraryService(new LibraryStore(folder.resolve("library.db")));
+        scan(service, List.of(audio), false);
+        var original = service.catalog().tagsFor(service.snapshot().getFirst());
+        var cancelled = new CompletableFuture<String>();
+        SwingUtilities.invokeAndWait(() -> {
+            service.analyzeNow(cancelled::complete);
+            service.cancelAnalysis();
+        });
+        assertTrue(cancelled.get(10, TimeUnit.SECONDS).contains("cancelled"));
+        var restarted = new CompletableFuture<String>();
+        SwingUtilities.invokeAndWait(() -> service.analyzeNow(restarted::complete));
+        assertEquals("All available tracks have current analysis", restarted.get(10, TimeUnit.SECONDS));
+        assertEquals(original, service.catalog().tagsFor(service.snapshot().getFirst()));
+    }
+
     @Test void rescanChecksLegacyPathsWithoutAddingTheirNeighbors() throws Exception {
         Path known = writeWav(folder.resolve("Known.wav"), 1);
         writeWav(folder.resolve("Neighbor.wav"), 1);
@@ -217,7 +445,8 @@ class LibraryServiceTest {
         var refreshed = new CompletableFuture<LibraryService.Catalog>();
         SwingUtilities.invokeAndWait(() -> {
             service.addCatalogListener(catalog -> {
-                if (!catalog.tracks().isEmpty() && catalog.tracks().getFirst().metadata().extractionVersion() == 1) refreshed.complete(catalog);
+                if (!catalog.tracks().isEmpty() && catalog.tracks().getFirst().metadata().extractionVersion()
+                    == TrackMetadata.CURRENT_VERSION) refreshed.complete(catalog);
             });
             service.loadInitial(message -> { if (message.contains("could not") || message.contains("failed")) refreshed.completeExceptionally(new AssertionError(message)); });
         });
@@ -226,6 +455,41 @@ class LibraryServiceTest {
         assertTrue(saved.metadata().sampleRateHz() > 0);
         assertTrue(store.loadSources().isEmpty());
         assertEquals(1, store.loadAll().size());
+    }
+
+    @Test void singleTrackAnalysisReviewsAndSavesOnlyTheSelectedTrack() throws Exception {
+        Path one = writeWav(folder.resolve("one.wav"), 35);
+        Path two = writeWav(folder.resolve("two.wav"), 1);
+        var store = new LibraryStore(folder.resolve("data/library.db"));
+        var service = new LibraryService(store);
+        scan(service, List.of(one, two), false);
+        store.updateDetails(List.of(one), new LibraryStore.DetailChanges(null, null, null, null, 23, 17,
+            Map.of(), Set.of("Practice")));
+        Track track = service.catalog().byPath().get(one);
+        var discarded = new CompletableFuture<String>();
+        SwingUtilities.invokeAndWait(() -> service.analyzeTrack(track, AudioAnalyzer.Sampling.OPENING_30, false, "E-flat major",
+            tags -> null, message -> { if (!message.startsWith("Analysing")) discarded.complete(message); }));
+        assertEquals("Track analysis discarded", discarded.get(10, TimeUnit.SECONDS));
+        assertEquals(35, service.catalog().tagsFor(track).features().sampledSeconds(), .01);
+        var saved = new CompletableFuture<String>();
+        SwingUtilities.invokeAndWait(() -> service.analyzeTrack(track, AudioAnalyzer.Sampling.OPENING_30, false, "C minor",
+            tags -> {
+                assertTrue(SwingUtilities.isEventDispatchThread());
+                assertTrue(tags.features().moodTags().isEmpty());
+                return List.of("Sorrowful", "Melodious");
+            }, message -> { if (!message.startsWith("Analysing")) saved.complete(message); }));
+        assertTrue(saved.get(10, TimeUnit.SECONDS).startsWith("Analysis saved"));
+        var entry = store.loadCatalog().stream().filter(value -> value.track().path().equals(one)).findFirst().orElseThrow();
+        assertEquals("C minor", entry.track().metadata().text(TrackMetadata.Field.KEY));
+        assertEquals(Set.of("Practice"), entry.track().metadata().tags());
+        assertEquals(23, entry.tags().energy());
+        assertEquals(30, entry.tags().features().sampledSeconds(), .01);
+        assertEquals(List.of("Melodious", "Sorrowful"), entry.tags().features().moodTags());
+        assertTrue(service.catalog().tagsFor(service.catalog().byPath().get(two)).features().moodTags().isEmpty());
+        var search = new LibrarySearchStore(store);
+        var matches = search.search(new LibrarySearchStore.Request("sorrowful", LibrarySearchStore.Category.SONGS,
+            true, LibrarySearchStore.Order.ALPHABETICAL, 0, 20));
+        assertEquals(List.of(one), matches.hits().stream().map(hit -> hit.track().path()).toList());
     }
 
     private LibraryService.ImportSummary scan(LibraryService service, List<Path> sources, boolean recursive) throws Exception {

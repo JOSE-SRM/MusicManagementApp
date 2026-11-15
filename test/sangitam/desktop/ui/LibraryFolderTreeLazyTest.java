@@ -55,6 +55,48 @@ class LibraryFolderTreeLazyTest {
             LibraryPagingPanelTest.await(()->find(tree.get(),tracks.get(1).path())!=null);
         } finally {release.countDown();SwingUtilities.invokeAndWait(()->tree.get().close());}
     }
+    @Test void enteredFoldersAndRecursiveCollapseSurviveARefresh() throws Exception {
+        Path rootPath = Path.of("music/collection").toAbsolutePath();
+        Path branch = rootPath.resolve("Composer");
+        Path child = branch.resolve("Piano");
+        Track song = new Track(child.resolve("Piece.wav"), "Piece", "Artist", "Album", 60, "WAV");
+        Track other = new Track(rootPath.resolve("Other.wav"), "Other", "Artist", "Album", 60, "WAV");
+        var tree = new AtomicReference<LibraryFolderTree>();
+        SwingUtilities.invokeAndWait(() -> {
+            tree.set(new LibraryFolderTree(ignored -> { }));
+            tree.get().setTracks(List.of(song, other), Set.of());
+        });
+        try {
+            LibraryPagingPanelTest.await(() -> find(tree.get(), branch) != null);
+            SwingUtilities.invokeAndWait(() -> tree.get().toggleFolder(branch));
+            LibraryPagingPanelTest.await(() -> find(tree.get(), child) != null);
+            SwingUtilities.invokeAndWait(() -> tree.get().toggleFolder(child));
+            LibraryPagingPanelTest.await(() -> find(tree.get(), song.path()) != null);
+            SwingUtilities.invokeAndWait(() -> {
+                tree.get().collapseRecursively(branch);
+                assertFalse(tree.get().folderExpanded(branch));
+                tree.get().toggleFolder(branch);
+            });
+            LibraryPagingPanelTest.await(() -> find(tree.get(), child) != null);
+            SwingUtilities.invokeAndWait(() -> {
+                assertFalse(tree.get().folderExpanded(child));
+                activate(tree.get(), find(tree.get(), child));
+                assertEquals(child, tree.get().currentFolder());
+            });
+            LibraryPagingPanelTest.await(() -> find(tree.get(), song.path()) != null);
+            var revised = new Track(song.path(), "Updated piece", song.artist(), song.album(), 60, "WAV");
+            SwingUtilities.invokeAndWait(() -> tree.get().setTracks(List.of(revised, other), Set.of()));
+            LibraryPagingPanelTest.await(() -> find(tree.get(), song.path()) != null
+                && revised.equals(find(tree.get(), song.path()).getUserObject()));
+            SwingUtilities.invokeAndWait(() -> {
+                assertEquals(child, tree.get().currentFolder());
+                assertNull(find(tree.get(), other.path()));
+                tree.get().leaveFolder();
+                assertNull(tree.get().currentFolder());
+            });
+            LibraryPagingPanelTest.await(() -> find(tree.get(), other.path()) != null);
+        } finally { SwingUtilities.invokeAndWait(() -> tree.get().close()); }
+    }
     private static void settle() throws Exception {var done=new CountDownLatch(1);SwingUtilities.invokeAndWait(()->{Timer timer=new Timer(120,event->done.countDown());timer.setRepeats(false);timer.start();});assertTrue(done.await(5,TimeUnit.SECONDS));}
     private static void activate(LibraryFolderTree tree,DefaultMutableTreeNode node){tree.setSelectionPath(new TreePath(node.getPath()));tree.getActionMap().get("openLibraryRow").actionPerformed(new ActionEvent(tree,0,""));}
     private static DefaultMutableTreeNode root(JTree tree){return(DefaultMutableTreeNode)tree.getModel().getRoot();}

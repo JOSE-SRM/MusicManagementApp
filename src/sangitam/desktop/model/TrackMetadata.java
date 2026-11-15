@@ -5,16 +5,18 @@ import java.util.*;
 /** Optional metadata, kept separate from the track's file identity and measured mood scores. */
 public record TrackMetadata(Map<Field, Value> fields, Set<String> tags, int bitrateKbps, int sampleRateHz,
                             int bitsPerSample, String channels, boolean embeddedArtwork, int extractionVersion) {
-    public static final int CURRENT_VERSION = 1;
+    public static final int CURRENT_VERSION = 2;
     public enum Field {
         COMPOSER("Composer"), CONDUCTOR("Conductor"), SOLOIST("Soloist"), PERFORMERS("Performers"), ORCHESTRA("Orchestra / ensemble"),
-        ALBUM_ARTIST("Album artist"), WORK("Work"), MOVEMENT("Movement"), KEY("Musical key"),
-        OPUS("Opus / catalogue"), PERIOD("Period"), FORM("Form"), INSTRUMENTATION("Instrumentation");
+        ALBUM_ARTIST("Album artist"), WORK("Work"), MOVEMENT("Movement"), KEY("Musical key"), WORK_KEY("Work key"),
+        OPUS("Opus / catalogue"), PERIOD("Composition period"), FORM("Form"), INSTRUMENTATION("Instrumentation"),
+        COMPOSITION_DATE("Composition date"), RECORDING_DATE("Recording date"), RECORDING_PERIOD("Recording period"),
+        RELEASE_DATE("First release date");
         private final String label;
         Field(String label) { this.label = label; }
         @Override public String toString() { return label; }
     }
-    public enum Origin { EMBEDDED, TITLE_HINT, FOLDER_HINT, USER }
+    public enum Origin { EMBEDDED, TITLE_HINT, FOLDER_HINT, SCORE_REFERENCE, ONLINE, USER }
     public record Value(String text, Origin origin) {
         public Value { text = Objects.requireNonNull(text).strip(); Objects.requireNonNull(origin); }
     }

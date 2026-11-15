@@ -17,11 +17,13 @@ public final class SettingsDialog extends JDialog {
     private final JPasswordField youtube = new JPasswordField(36);
     private final JPasswordField apple = new JPasswordField(36);
     private final JPasswordField lastfm = new JPasswordField(36);
+    private final JPasswordField acoustid = new JPasswordField(36);
     private final JTextField storefront = new JTextField(AppPreferences.appleStorefront(), 5);
     private final JCheckBox clearSpotify = new JCheckBox("Remove saved credential");
     private final JCheckBox clearYoutube = new JCheckBox("Remove saved credential");
     private final JCheckBox clearApple = new JCheckBox("Remove saved credential");
     private final JCheckBox clearLastfm = new JCheckBox("Remove saved credential");
+    private final JCheckBox clearAcoustid = new JCheckBox("Remove saved credential");
     private final JLabel status = UiFactory.label("Credentials are stored in Windows Credential Manager.", Theme.SMALL, Theme.TEXT_MUTED);
     private JButton saveButton;
 
@@ -57,6 +59,8 @@ public final class SettingsDialog extends JDialog {
         c.gridx = 1; c.gridwidth = 2; form.add(storefront, c); c.gridwidth = 1;
         addCredential(form, c, "Last.fm API key", lastfm, clearLastfm,
             "Used with the username entered on Rediscover.");
+        addCredential(form, c, "AcoustID application key", acoustid, clearAcoustid,
+            "Enables fingerprint fallback during automatic recording identification. Requires Chromaprint fpcalc.");
         root.add(form, BorderLayout.CENTER);
 
         JPanel bottom = new JPanel(new BorderLayout(8, 8));
@@ -106,6 +110,7 @@ public final class SettingsDialog extends JDialog {
         collect(updates, ProviderCredentials.YOUTUBE_KEY, youtube, clearYoutube);
         collect(updates, ProviderCredentials.APPLE_TOKEN, apple, clearApple);
         collect(updates, ProviderCredentials.LASTFM_KEY, lastfm, clearLastfm);
+        collect(updates, ProviderCredentials.ACOUSTID_KEY, acoustid, clearAcoustid);
         saveButton.setEnabled(false);
         status.setText("Saving provider credentials securely…");
         new SwingWorker<Void, Void>() {

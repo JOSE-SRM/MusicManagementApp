@@ -78,11 +78,33 @@ public final class CollectionStore {
                 )
                 """);
         }
+        migrateSongLikes(connection);
+    }
+
+    private static void migrateSongLikes(Connection connection) throws SQLException {
+        connection.setAutoCommit(false);
+        try (var statement = connection.createStatement()) {
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS song_likes (path TEXT PRIMARY KEY NOT NULL)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS former_song_pins (path TEXT PRIMARY KEY NOT NULL)");
+            if (statement.executeUpdate("INSERT OR IGNORE INTO app_state VALUES('independent_song_likes','1')") == 1) {
+                statement.executeUpdate("INSERT OR IGNORE INTO song_likes SELECT item FROM library_pins WHERE kind='SONG'");
+                statement.executeUpdate("INSERT OR IGNORE INTO former_song_pins SELECT item FROM library_pins WHERE kind='SONG'");
+                statement.executeUpdate("DELETE FROM library_pins WHERE kind='SONG'");
+            }
+            connection.commit();
+        } catch (SQLException error) {
+            connection.rollback();
+            throw error;
+        } finally {
+            connection.setAutoCommit(true);
+        }
     }
 
     public LibraryCollections load() throws SQLException {
         List<Folder> folders = new ArrayList<>();
         var pins = new HashSet<Key>();
+        var likes = new HashSet<Path>();
+        var formerPins = new HashSet<Path>();
         try (Connection connection = library.connect();
              Statement query = connection.createStatement();
              PreparedStatement members = connection.prepareStatement(
@@ -101,8 +123,14 @@ public final class CollectionStore {
             try (ResultSet rows = query.executeQuery("SELECT kind,item FROM library_pins")) {
                 while (rows.next()) pins.add(new Key(Kind.valueOf(rows.getString(1)), rows.getString(2)));
             }
+            try (ResultSet rows = query.executeQuery("SELECT path FROM song_likes")) {
+                while (rows.next()) likes.add(Path.of(rows.getString(1)));
+            }
+            try (ResultSet rows = query.executeQuery("SELECT path FROM former_song_pins")) {
+                while (rows.next()) formerPins.add(Path.of(rows.getString(1)));
+            }
         }
-        return new LibraryCollections(library.loadPlaylists(), folders, pins);
+        return new LibraryCollections(library.loadPlaylists(), folders, pins, likes, formerPins);
     }
 
     public void createFolder(String name, long parent) throws SQLException {
@@ -243,18 +271,18 @@ public final class CollectionStore {
     }
 
     public void setPinned(Key key, boolean pinned) throws SQLException {
-        transact(connection -> execute(connection, pinned ? "INSERT OR IGNORE INTO library_pins VALUES (?,?)"
-            : "DELETE FROM library_pins WHERE kind=? AND item=?", key.kind().name(), key.id()));
+        transact(connection -> {
+            execute(connection, pinned ? "INSERT OR IGNORE INTO library_pins VALUES (?,?)"
+                : "DELETE FROM library_pins WHERE kind=? AND item=?", key.kind().name(), key.id());
+            if (pinned && key.kind() == Kind.SONG)
+                execute(connection, "DELETE FROM former_song_pins WHERE path=?", key.id());
+        });
     }
 
-    public void togglePinned(Key key) throws SQLException {
-        transact(connection -> {
-            try (var remove = connection.prepareStatement("DELETE FROM library_pins WHERE kind=? AND item=?")) {
-                remove.setString(1, key.kind().name());
-                remove.setString(2, key.id());
-                if (remove.executeUpdate() == 0) execute(connection, "INSERT INTO library_pins VALUES (?,?)", key.kind().name(), key.id());
-            }
-        });
+    public void setLiked(Path path, boolean liked) throws SQLException {
+        // The active like row is itself the score contribution, so retries cannot accumulate a bonus.
+        transact(connection -> execute(connection, liked ? "INSERT OR IGNORE INTO song_likes VALUES (?)"
+            : "DELETE FROM song_likes WHERE path=?", path.toString()));
     }
 
     private List<Long> branch(Connection connection, long id) throws SQLException {

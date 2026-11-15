@@ -21,6 +21,7 @@ public final class SessionComposerPanel extends JPanel {
     private final JTextArea description = new JTextArea("Choose a mood and energy arc. Build a temporary journey and save it if you like it.");
     private final Arc arc = new Arc();
     private Runnable analyze = () -> { };
+    private Runnable cancelAnalysis = () -> { };
 
     public SessionComposerPanel(Consumer<String> notify, Consumer<SessionPlanner.Request> build) {
         super(new BorderLayout(16, 12));
@@ -75,7 +76,7 @@ public final class SessionComposerPanel extends JPanel {
         description.setOpaque(false);
         description.setForeground(Theme.TEXT_MUTED);
         description.setFont(Theme.SMALL);
-        JScrollPane notes = new JScrollPane(description);
+        JScrollPane notes = new PixelScrollPane(description);
         notes.setPreferredSize(new Dimension(0, 65));
         notes.setBorder(null);
         notes.setOpaque(false);
@@ -96,6 +97,8 @@ public final class SessionComposerPanel extends JPanel {
         buttons.setOpaque(false);
         JButton refresh = UiFactory.button("Deep analyse library", null, false);
         refresh.addActionListener(event -> analyze.run());
+        JButton cancel = UiFactory.button("Cancel analysis", null, false);
+        cancel.addActionListener(event -> cancelAnalysis.run());
         JButton create = UiFactory.button("Build my journey", AppIcons.of(AppIcons.Kind.PLAY, 20, Theme.BLACK), true);
         create.addActionListener(event -> {
             try {
@@ -109,6 +112,7 @@ public final class SessionComposerPanel extends JPanel {
             }
         });
         buttons.add(refresh);
+        buttons.add(cancel);
         buttons.add(create);
         footer.add(buttons);
         add(footer, BorderLayout.SOUTH);
@@ -138,9 +142,10 @@ public final class SessionComposerPanel extends JPanel {
     }
 
     public void setAnalyzeAction(Runnable action) { analyze = action; }
+    public void setCancelAnalysisAction(Runnable action) { cancelAnalysis = action; }
 
     public void setCatalog(LibraryService.Catalog catalog) {
-        analysis.setText(catalog.measuredCount() + " / " + catalog.tracks().size() + " deeply measured");
+        analysis.setText(catalog.measuredCount() + " / " + catalog.tracks().size() + " analyses up to date");
     }
 
     public void showPlan(SessionPlanner.Plan plan) {

@@ -14,15 +14,17 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class SessionJourneyPanelTest {
     @Test void composerRoutesEditableMoodArcAndAnalysisAndJourneyRoutesPlaybackReplacementAndTaste() throws Exception {
-        var built=new AtomicReference<SessionPlanner.Request>();var analyzed=new AtomicBoolean();var started=new AtomicReference<List<SessionPlanner.Choice>>();
+        var built=new AtomicReference<SessionPlanner.Request>();var analyzed=new AtomicBoolean();var cancelled=new AtomicBoolean();var started=new AtomicReference<List<SessionPlanner.Choice>>();
         var replaced=new AtomicInteger(-1);var rated=new AtomicInteger();var edited=new AtomicReference<List<SessionPlanner.Choice>>();
         Track a=new Track(Path.of("a.wav"),"Opening","Artist A","Album",180,"WAV"),b=new Track(Path.of("b.wav"),"Arrival","Artist B","Album",180,"WAV");
         var choices=List.of(new SessionPlanner.Choice(a,"Measured quiet opening"),new SessionPlanner.Choice(b,"Measured energetic arrival"));
         SwingUtilities.invokeAndWait(()->{
             Theme.install();var composer=new SessionComposerPanel(message->fail(message),built::set);composer.setAnalyzeAction(()->analyzed.set(true));
+            composer.setCancelAnalysisAction(() -> cancelled.set(true));
             var mood=AudioSettingsPanelTest.children(composer,JComboBox.class).stream().filter(c->c.getItemAt(0) instanceof SessionPlanner.Mood).findFirst().orElseThrow();mood.setSelectedItem(SessionPlanner.Mood.HAPPY);
             var sliders=AudioSettingsPanelTest.children(composer,JSlider.class);sliders.get(0).setValue(20);sliders.get(1).setValue(80);
             click(composer,"Deep analyse library");click(composer,"Build my journey");assertTrue(analyzed.get());
+            click(composer,"Cancel analysis");assertTrue(cancelled.get());
             assertEquals(SessionPlanner.Mood.HAPPY,built.get().mood());assertEquals(20,built.get().energy());assertEquals(80,built.get().endEnergy());assertFalse(built.get().useContext());
             mood.setSelectedItem(SessionPlanner.Mood.AUTO);assertFalse(sliders.get(0).isEnabled());
             click(composer,"Build my journey");assertTrue(built.get().useContext());

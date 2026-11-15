@@ -1,6 +1,7 @@
 package sangitam.desktop.session;
 
 import sangitam.desktop.model.Track;
+import sangitam.desktop.model.TrackPreference;
 import sangitam.desktop.model.TrackTags;
 
 import java.nio.file.Path;
@@ -35,8 +36,8 @@ public final class SessionPlanner {
         return build(request,tracks,tags,playCounts,new SessionContext(java.time.ZonedDateTime.now(),Map.of(),List.of()));
     }
     public Plan build(Request request,List<Track> tracks,Map<Path,TrackTags> tags,Map<Path,Integer> playCounts,SessionContext context) {
-        tracks = tracks.stream().filter(track -> context.taste().getOrDefault(track.path(),0) > -2).distinct().toList();
-        var affinity = context.affinities(tracks); var hint = context.hint(tags);
+        tracks = tracks.stream().filter(track -> context.taste().getOrDefault(track.path(), 0) != TrackPreference.AVOID).distinct().toList();
+        var affinity = context.affinities(tracks, playCounts); var hint = context.hint(tags);
         int startEnergy = request.useContext() && request.mood()==Mood.AUTO ? hint.energy() : request.energy();
         int targetValence = switch(request.mood()) { case HAPPY -> 78; case SAD,TENSE -> 25; case AUTO -> request.useContext()?hint.valence():50; default -> 50; };
         List<Choice> chosen = new ArrayList<>();
@@ -54,11 +55,12 @@ public final class SessionPlanner {
             Track best = tracks.stream()
                 .filter(track -> !used.contains(track.path()))
                 .filter(track -> duration(track) <= remaining + Math.max(75, target / 12))
-                .max(Comparator.comparingInt((Track track) -> score(step, track,
+                .max(Comparator.comparingDouble((Track track) -> score(step, track,
                     tags.getOrDefault(track.path(), TrackTags.pending()),
-                    playCounts.getOrDefault(track.path(), 0), artists, genres) + (int)Math.round(affinity.getOrDefault(track.path(),0d))
-                    - (tags.getOrDefault(track.path(),TrackTags.pending()).features().version()>0 ? Math.abs(tags.get(track.path()).features().valence()-targetValence)/3 : 0))
-                    .thenComparing(track -> track.title().toLowerCase(Locale.ROOT), Comparator.reverseOrder()))
+                    playCounts.getOrDefault(track.path(), 0), artists, genres) + affinity.getOrDefault(track.path(),0d)
+                    - Math.abs(tags.getOrDefault(track.path(),TrackTags.pending()).features().recommendationValence()-targetValence)/3)
+                    .thenComparing(track -> track.title().toLowerCase(Locale.ROOT), Comparator.reverseOrder())
+                    .thenComparing(track -> track.path().toString(), Comparator.reverseOrder()))
                 .orElse(null);
             if (best == null) {
                 // A long file is still usable when it is the only option.
@@ -76,8 +78,10 @@ public final class SessionPlanner {
             TrackTags profile = tags.getOrDefault(best.path(), TrackTags.pending());
             chosen.add(new Choice(best, explain(request, best, profile,
                 playCounts.getOrDefault(best.path(), 0)) + (request.useContext() ? " · " + hint.explanation() : "")
-                + " · taste " + context.taste().getOrDefault(best.path(),0) + " · target energy " + targetEnergy
-                + (profile.features().version()>0 ? " · " + profile.features().summary() : " · deeper analysis pending")));
+                + " · preference " + String.format(Locale.ROOT, "%.1f", context.preference(best.path(), playCounts.getOrDefault(best.path(), 0)))
+                + " · target energy " + targetEnergy
+                + (profile.features().version() == sangitam.desktop.model.AudioFeatures.VERSION
+                    ? " · " + profile.features().summary(best.metadata()) : " · deeper analysis pending")));
 
             used.add(best.path());
             artists.add(best.artist().toLowerCase(Locale.ROOT));

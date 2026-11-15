@@ -11,15 +11,25 @@ class ClassicalHintsTest {
     @Test void extractsExplicitClassicalTermsAndRecordsTheirSource() {
         var values = ClassicalHints.enrich(Path.of("Classical/Baroque/sonata.mp3"),
             "Piano Sonata in C sharp minor, Op. 27 No. 2: I. Adagio sostenuto", "Classical", Map.of());
-        assertEquals("C# minor", values.get(Field.KEY).text());
+        assertEquals("C# minor", values.get(Field.WORK_KEY).text());
         assertEquals("Op. 27 No. 2", values.get(Field.OPUS).text());
         assertEquals("I. Adagio sostenuto", values.get(Field.MOVEMENT).text());
         assertEquals("Sonata", values.get(Field.FORM).text());
         assertEquals("piano", values.get(Field.INSTRUMENTATION).text());
-        assertEquals(Origin.TITLE_HINT, values.get(Field.KEY).origin());
+        assertEquals(Origin.TITLE_HINT, values.get(Field.WORK_KEY).origin());
         assertEquals(Origin.FOLDER_HINT, values.get(Field.PERIOD).origin());
         assertFalse(values.containsKey(Field.CONDUCTOR));
         assertFalse(values.containsKey(Field.SOLOIST));
+    }
+    @Test void resolvesPathetiqueMovementKeysFromTheScore() {
+        var path = Path.of("Classical/Beethoven/Piano Sonatas/recording.mp3");
+        for (var example : Map.of("Pathétique [Phase One]", "C minor", "Pathétique Movement 2", "A-flat major",
+            "Pathétique [Phase Three]", "C minor").entrySet()) {
+            var fields = ClassicalHints.enrich(path, example.getKey(), "Classical", Map.of());
+            assertEquals(new Value(example.getValue(), Origin.SCORE_REFERENCE), fields.get(Field.KEY));
+            assertEquals("C minor", fields.get(Field.WORK_KEY).text());
+        }
+        assertFalse(ClassicalHints.enrich(path, "Pathétique", "Classical", Map.of()).containsKey(Field.KEY));
     }
     @Test void embeddedCreditsWinAndAmbiguousComposerDoesNotDeterminePeriod() {
         var embedded = Map.of(Field.COMPOSER, new Value("Beethoven", Origin.EMBEDDED),

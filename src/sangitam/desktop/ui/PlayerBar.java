@@ -17,6 +17,7 @@ public final class PlayerBar extends JPanel {
         default void audioSettings() { } default void openTrack(Track track) { } default void openArtist(String name) { }
         default void toggleLiked(Track track) { } default void toggleQueue() { }
         default void toggleSpectrum() { }
+        default JPopupMenu trackMenu(Track track) { return null; }
     }
     private final MarqueeButton title = new MarqueeButton();
     private final JPanel credits = new JPanel(new FlowLayout(FlowLayout.LEFT, 3, 0));
@@ -27,7 +28,7 @@ public final class PlayerBar extends JPanel {
     private final LibraryArtwork artwork = new LibraryArtwork(64);
     private Map<java.nio.file.Path, FileStamp> stamps = Map.of();
     private Set<java.nio.file.Path> unavailable = Set.of();
-    private final JButton playPause, shuffle, repeat, liked, queue, audio;
+    private final JButton playPause, shuffle, repeat, liked, queue, audio, spectrum;
     private final JSlider progress = new JSlider(0, 1_000_000, 0), volumeSlider = new JSlider(0, 150, 72);
     private final JLabel volumeValue = UiFactory.label("72%", Theme.SMALL, Theme.TEXT_MUTED);
     private final EqMini mini = new EqMini();
@@ -37,7 +38,7 @@ public final class PlayerBar extends JPanel {
 
     public PlayerBar(Actions actions) {
         super(new BorderLayout(16, 0)); this.actions = actions;
-        setOpaque(false); setBackground(Theme.SURFACE); setBorder(BorderFactory.createCompoundBorder(UiFactory.roundedBorder(Theme.DIVIDER, 24), Theme.padding(14, 16, 14, 16)));
+        setOpaque(false); setBorder(Theme.padding(15, 17, 15, 17));
         setPreferredSize(new Dimension(0, 112));
         JPanel track = new JPanel(new BorderLayout(10, 0)); track.setOpaque(false);
         picture.setPreferredSize(new Dimension(64, 64)); picture.setHorizontalAlignment(SwingConstants.CENTER);
@@ -47,9 +48,17 @@ public final class PlayerBar extends JPanel {
         JPanel labels = new JPanel(new BorderLayout(0, 4)); labels.setOpaque(false);
         title.setText("Nothing playing"); title.setEnabled(false);
         title.addActionListener(event -> { if (displayed.track() != null) actions.openTrack(displayed.track()); });
+        title.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override public void mousePressed(java.awt.event.MouseEvent event) { popup(event); }
+            @Override public void mouseReleased(java.awt.event.MouseEvent event) { popup(event); }
+            private void popup(java.awt.event.MouseEvent event) {
+                if (event.isPopupTrigger()) showTrackMenu(event.getX(), event.getY());
+            }
+        });
+        LibraryPanel.bind(title, KeyStroke.getKeyStroke("shift F10"), "playingTrackMenu", () -> showTrackMenu(0, title.getHeight()));
         labels.add(title, BorderLayout.NORTH);
         credits.setOpaque(false);
-        JScrollPane names = new JScrollPane(credits, ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER, ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+        JScrollPane names = new PixelScrollPane(credits, ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER, ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
         UiFactory.styleScroll(names); names.getHorizontalScrollBar().setPreferredSize(new Dimension(0, 5));
         names.setBorder(null); names.setOpaque(false); names.getViewport().setOpaque(false); names.setPreferredSize(new Dimension(180, 38));
         labels.add(names, BorderLayout.CENTER); track.add(labels, BorderLayout.CENTER);
@@ -81,7 +90,8 @@ public final class PlayerBar extends JPanel {
         JPanel top = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0)); top.setOpaque(false);
         queue = control(AppIcons.Kind.QUEUE, "Queue and recently played", false); queue.addActionListener(event -> actions.toggleQueue());
         audio = control(AppIcons.Kind.EQ, "Audio settings and equalizer", false); audio.addActionListener(event -> actions.audioSettings());
-        JButton spectrum = control(AppIcons.Kind.SPECTRUM, "Show or hide spectrum", false); spectrum.addActionListener(event -> actions.toggleSpectrum());
+        spectrum = control(AppIcons.Kind.SPECTRUM, "Show or hide spectrum · Right-click for display options", false);
+        spectrum.addActionListener(event -> actions.toggleSpectrum());
         mini.setToolTipText("Saved equalizer curve · click EQ to edit"); top.add(queue); top.add(spectrum); top.add(audio); top.add(mini); tools.add(top, BorderLayout.NORTH);
         JPanel volume = new JPanel(new BorderLayout(6, 0)); volume.setOpaque(false);
         JButton mute = control(AppIcons.Kind.VOLUME, "Mute or restore volume", false);
@@ -91,7 +101,19 @@ public final class PlayerBar extends JPanel {
         volume.add(volumeSlider, BorderLayout.CENTER); volumeValue.setPreferredSize(new Dimension(44, 24)); volume.add(volumeValue, BorderLayout.EAST);
         tools.add(volume, BorderLayout.SOUTH); tools.setPreferredSize(new Dimension(222, 78)); add(tools, BorderLayout.EAST); updateVolumeLabel();
     }
-    private static void style(JSlider slider) { slider.setOpaque(false); slider.setForeground(Theme.BLUE); slider.setUI(new RoundSliderUI(slider)); }
+
+    void setSpectrumMenu(SpectrumMenu menu) { menu.attach(spectrum); }
+
+    void setSpectrumVisible(boolean visible) {
+        setPreferredSize(new Dimension(0, visible ? 103 : 112));
+        setBorder(Theme.padding(15, 17, visible ? 6 : 15, 17));
+    }
+    static void style(JSlider slider) { slider.setOpaque(false); slider.setForeground(Theme.BLUE); slider.setUI(new RoundSliderUI(slider)); }
+    private void showTrackMenu(int x, int y) {
+        if (displayed.track() == null) return;
+        var menu = actions.trackMenu(displayed.track());
+        if (menu != null) menu.show(title, x, y);
+    }
     static JButton control(AppIcons.Kind kind, String name, boolean primary) {
         JButton button = new JButton(AppIcons.of(kind, primary ? 28 : 22, primary ? Theme.BLACK : Theme.TEXT));
         button.setToolTipText(name); button.getAccessibleContext().setAccessibleName(name);
@@ -117,7 +139,7 @@ public final class PlayerBar extends JPanel {
     }
     public void setShuffle(boolean enabled) { mode(shuffle, AppIcons.Kind.SHUFFLE, enabled, "Shuffle"); }
     public void setRepeat(boolean enabled) { mode(repeat, AppIcons.Kind.REPEAT, enabled, "Repeat current track"); }
-    private void mode(JButton button, AppIcons.Kind icon, boolean enabled, String name) { button.setIcon(AppIcons.of(icon, 22, enabled ? Theme.BLUE : Theme.TEXT_MUTED)); button.setToolTipText(name + (enabled ? " on" : " off")); button.getAccessibleContext().setAccessibleName(button.getToolTipText()); }
+    static void mode(JButton button, AppIcons.Kind icon, boolean enabled, String name) { button.setIcon(AppIcons.of(icon, 22, enabled ? Theme.BLUE : Theme.TEXT_MUTED)); button.setToolTipText(name + (enabled ? " on" : " off")); button.getAccessibleContext().setAccessibleName(button.getToolTipText()); }
     public void setLiked(boolean enabled) { mode(liked, AppIcons.Kind.HEART, enabled, enabled ? "Liked song" : "Like song"); }
     public void setQueueVisible(boolean enabled) { mode(queue, AppIcons.Kind.QUEUE, enabled, "Queue and recently played"); }
     public void setAudioSettings(AudioSettings settings) { mini.settings = settings; mini.repaint(); audio.setIcon(AppIcons.of(AppIcons.Kind.EQ, 22, settings.equalizerEnabled() ? Theme.BLUE : Theme.TEXT_MUTED)); }
@@ -156,7 +178,6 @@ public final class PlayerBar extends JPanel {
     private void showTime(double position, double total) { elapsed.setText(clock(position)); duration.setText(clock(total)); remaining.setText("−" + clock(Math.max(0, total - position))); remaining.setToolTipText("Remaining time"); duration.setToolTipText("Total duration"); }
     static String clock(double seconds) { long whole = Math.max(0, (long) seconds); return String.format("%d:%02d", whole / 60, whole % 60); }
     public void close() { artwork.close(); }
-    @Override protected void paintComponent(Graphics graphics) { Graphics2D g = (Graphics2D) graphics.create(); g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON); g.setColor(Theme.SURFACE); g.fillRoundRect(0, 0, getWidth(), getHeight(), 24, 24); g.dispose(); super.paintComponent(graphics); }
     private static final class EqMini extends JComponent {
         private AudioSettings settings = AudioSettings.defaults();
         EqMini() { setPreferredSize(new Dimension(50, 34)); getAccessibleContext(); }

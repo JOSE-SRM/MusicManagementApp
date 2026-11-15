@@ -228,7 +228,7 @@ Read [Playbar, artists, and shortcuts](PLAYBAR_ARTISTS_AND_SHORTCUTS.md) for the
 
 General now publishes bounded snapshot pages and Locations loads branch windows on demand. Read [Library presentation paging](LIBRARY_PRESENTATION_PAGING.md) for the page/membership distinction, worker generations, lazy-node lifecycle, restoration, tests, and measured limits. Full catalog storage remains resident.
 
-The roadmap still includes database-backed browsing for the remaining library views, opt-in MusicBrainz/artist enrichment, richer audio analysis and mood curves, crossfade/gapless work, remaining menu implementations, VLC spectrum, analytics, and Windows packaging. Provider audio is restricted to integrations that officially permit playback; catalog links are not local audio files. Read the handoff before choosing the next item.
+The handoff tracks database-backed browsing, recording identification, a managed library, score integration, crossfade and gapless playback, and Windows release work. Catalog integrations link to the provider. Audio playback and download require explicit provider support. [Current handoff](PROJECT_HANDOFF.md)
 
 Manual visual and interaction verification remains pending for the latest editor, search, smart-playlist, restoration, Home, playbar/artist/shortcut screens, and Windows media integration. The current work was checked through source, headless components/offscreen images, and protocol-only companion execution without desktop control.
 

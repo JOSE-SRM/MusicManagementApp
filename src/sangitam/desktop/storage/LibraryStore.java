@@ -8,6 +8,7 @@ import sangitam.desktop.model.FileStamp;
 import sangitam.desktop.model.LibrarySource;
 import sangitam.desktop.model.Playlist;
 import sangitam.desktop.model.PlaybackMemory;
+import sangitam.desktop.model.SpectrumPreferences;
 import sangitam.desktop.history.ListenEvent;
 
 import java.net.URI;
@@ -29,8 +30,11 @@ import java.util.UUID;
 /** Small SQLite boundary: UI panels never know SQL or the database location. */
 public final class LibraryStore {
     private static final String SAVE_TAGS = """
-        UPDATE tracks SET energy=?, activity=?, analyzed=?, file_size=?, file_modified=?, analysis_version=2
-        WHERE path=? AND tags_override=0 AND (metadata_size<0 OR (metadata_size=? AND metadata_modified=?))
+        UPDATE tracks SET energy=CASE WHEN tags_override=0 THEN ? ELSE energy END,
+            activity=CASE WHEN tags_override=0 THEN ? ELSE activity END,
+            analyzed=CASE WHEN tags_override=0 THEN ? ELSE analyzed END,
+            file_size=?, file_modified=?, analysis_version=?, analysis_failure=?
+        WHERE path=? AND (metadata_size<0 OR (metadata_size=? AND metadata_modified=?))
         """;
     public record CatalogEntry(Track track, TrackTags tags, int playCount, boolean manualTags,
                                FileStamp stamp, boolean unavailable, long recentAt, boolean titleOverride,
@@ -39,6 +43,8 @@ public final class LibraryStore {
     private boolean initialized;
 
     public LibraryStore(Path database) { this.database = database.toAbsolutePath().normalize(); }
+
+    Path dataDirectory() { return database.getParent(); }
 
     public synchronized void initialize() throws Exception {
         if (initialized) return;
@@ -76,6 +82,7 @@ public final class LibraryStore {
             addColumn(statement, columns, "genre_override", "INTEGER NOT NULL DEFAULT 0");
             addColumn(statement, columns, "tags_override", "INTEGER NOT NULL DEFAULT 0");
             addColumn(statement, columns, "analysis_version", "INTEGER NOT NULL DEFAULT 0");
+            addColumn(statement, columns, "analysis_failure", "TEXT");
             addColumn(statement, columns, "metadata_size", "INTEGER NOT NULL DEFAULT -1");
             addColumn(statement, columns, "metadata_modified", "INTEGER NOT NULL DEFAULT -1");
             addColumn(statement, columns, "unavailable", "INTEGER NOT NULL DEFAULT 0");
@@ -122,11 +129,16 @@ public final class LibraryStore {
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS library_exclusions (path TEXT PRIMARY KEY)");
             CollectionStore.initialize(connection);
             MetadataStore.initialize(connection);
+            RecordingMatchStore.initialize(connection);
+            BackgroundMetadataStore.initialize(connection);
             TasteStore.initialize(connection);
             AudioFeatureStore.initialize(connection);
             ArtistStore.initialize(connection);
             ArtistEnrichmentStore.initialize(connection);
             SmartPlaylistStore.initialize(connection);
+            ManagedLibraryStore.initialize(connection);
+            SheetMusicStore.initialize(connection);
+            ManagedScoreStore.initialize(connection);
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS tracks_title ON tracks(title COLLATE NOCASE,artist COLLATE NOCASE,path)");
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS tracks_recent ON tracks(MAX(added_at,last_played_at) DESC,path)");
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS tracks_plays ON tracks(play_count DESC,path)");
@@ -146,25 +158,45 @@ public final class LibraryStore {
 
     /** Loads metadata, measured tags, and familiarity together for session planning. */
     public List<CatalogEntry> loadCatalog() throws SQLException {
+        return loadCatalog(true);
+    }
+
+    /** Supplies scanner inputs without feeding reviewed online values back into file metadata. */
+    public List<CatalogEntry> loadFileCatalog() throws SQLException {
+        return loadCatalog(false);
+    }
+
+    private List<CatalogEntry> loadCatalog(boolean includeMatches) throws SQLException {
         List<CatalogEntry> tracks = new ArrayList<>();
         Map<String,String> aliases = new ArtistEnrichmentStore(this).aliases();
+        String labels = includeMatches ? "display_title AS title, display_artist AS artist, display_album AS album"
+            : "title, artist, album";
+        String table = includeMatches ? "tracks_with_recording_matches" : "tracks";
         try (Connection connection = connect();
              PreparedStatement query = connection.prepareStatement(
-                 "SELECT path, title, artist, album, duration_seconds, format, genre, " +
+                 "SELECT t.path, " + labels + ", duration_seconds, format, genre, " +
                  "energy, activity, analyzed, file_size, file_modified, play_count, tags_override, analysis_version, " +
-                 "metadata_size, metadata_modified, unavailable, MAX(added_at,last_played_at), title_override, " +
-                 "artist_override, m.payload, f.payload FROM tracks LEFT JOIN track_metadata m USING(path) LEFT JOIN audio_features f USING(path) " +
+                 "t.metadata_size, t.metadata_modified, unavailable, MAX(added_at,last_played_at), title_override, " +
+                 "artist_override, m.payload, f.payload, analysis_failure, " + (includeMatches ? "e.payload" : "NULL") + " FROM " + table + " t"
+                    + " LEFT JOIN track_metadata m USING(path) LEFT JOIN audio_features f USING(path) " +
+                 (includeMatches ? " LEFT JOIN background_metadata e ON e.path=t.path AND e.metadata_size=t.metadata_size "
+                    + "AND e.metadata_modified=t.metadata_modified " : "") +
                  "ORDER BY title COLLATE NOCASE, artist COLLATE NOCASE");
              ResultSet rows = query.executeQuery()) {
             while (rows.next()) {
                 Track track = new Track(Path.of(rows.getString(1)), rows.getString(2), rows.getString(3),
-                    rows.getString(4), rows.getDouble(5), rows.getString(6), rows.getString(7), MetadataStore.decode(rows.getString(22)));
+                    rows.getString(4), rows.getDouble(5), rows.getString(6), rows.getString(7),
+                    MetadataStore.decode(rows.getString(22), rows.getString(25)));
                 track = ArtistEnrichmentStore.canonical(track,aliases);
                 boolean manual = rows.getInt(14) == 1;
-                boolean oldAnalysis = !manual && rows.getInt(15) < 2;
+                int analysisVersion = rows.getInt(15);
+                boolean oldAnalysis = !manual && analysisVersion < 2;
+                String failure = rows.getString(24);
                 TrackTags tags = oldAnalysis ? TrackTags.pending()
                     : new TrackTags(rows.getInt(8), rows.getInt(9), rows.getInt(10) == 1,
-                        rows.getLong(11), rows.getLong(12), AudioFeatureStore.decode(rows.getString(23)));
+                        rows.getLong(11), rows.getLong(12), AudioFeatureStore.decode(rows.getString(23)),
+                        failure != null && analysisVersion == TrackTags.ANALYSIS_VERSION
+                            ? TrackTags.Failure.valueOf(failure) : null);
                 FileStamp stamp = new FileStamp(rows.getLong(16), rows.getLong(17));
                 tracks.add(new CatalogEntry(track, tags, rows.getInt(13), manual, stamp, rows.getInt(18) == 1,
                     rows.getLong(19), rows.getBoolean(20), rows.getBoolean(21)));
@@ -175,6 +207,10 @@ public final class LibraryStore {
 
     public void saveAll(List<Track> tracks) throws SQLException {
         saveScan(tracks, Map.of(), Set.of(), List.of(), Map.of());
+    }
+
+    public void saveManagedFilingHints(Path path, Map<TrackMetadata.Field, TrackMetadata.Value> hints) throws SQLException {
+        try (var connection = connect()) { MetadataStore.updateFilingHints(connection, path, hints); }
     }
 
     public List<LibrarySource> loadSources() throws SQLException {
@@ -195,6 +231,18 @@ public final class LibraryStore {
     public void saveScan(List<Track> changed, Map<Path, FileStamp> available, Set<Path> unavailable,
                          List<LibrarySource> sources, Map<Path, TrackTags> measured,
                          List<Path> restoredPaths) throws SQLException {
+        saveScan(changed, available, unavailable, sources, measured, restoredPaths, null);
+    }
+
+    public void saveScan(List<Track> changed, Map<Path, FileStamp> available, Set<Path> unavailable,
+                         List<LibrarySource> sources, Map<Path, TrackTags> measured,
+                         List<Path> restoredPaths, ManagedLibraryStore.Batch managed) throws SQLException {
+        saveScan(changed, available, unavailable, sources, measured, restoredPaths, managed, ManagedLibraryStore.Repair.EMPTY);
+    }
+
+    public void saveScan(List<Track> changed, Map<Path, FileStamp> available, Set<Path> unavailable,
+                         List<LibrarySource> sources, Map<Path, TrackTags> measured, List<Path> restoredPaths,
+                         ManagedLibraryStore.Batch managed, ManagedLibraryStore.Repair repair) throws SQLException {
         try (Connection connection = connect()) {
             connection.setAutoCommit(false);
             var aliases = ArtistEnrichmentStore.aliases(connection);
@@ -222,6 +270,8 @@ public final class LibraryStore {
                  PreparedStatement saveTags = connection.prepareStatement(SAVE_TAGS);
                  PreparedStatement restore = connection.prepareStatement("DELETE FROM library_exclusions WHERE path=?")) {
                 long addedAt = System.currentTimeMillis();
+                ManagedLibraryStore.apply(connection, managed);
+                ManagedLibraryStore.applyRepair(connection, repair);
                 for (Track track : normalized) {
                     FileStamp stamp = available.get(track.path());
                     upsert.setString(1, track.path().toString());
@@ -341,6 +391,8 @@ public final class LibraryStore {
                     update.setBoolean(7, reset.basic().contains(DetailReset.Basic.GENRE)); update.setString(8, track.genre());
                     update.setString(9, track.path().toString());
                     if (update.executeUpdate() == 0) continue;
+                    RecordingMatchStore.restoreFileLabels(connection, track.path(), reset.basic());
+                    BackgroundMetadataStore.restoreFields(connection, track.path(), reset.credits());
                     MetadataStore.restore(connection, track, reset); restored++;
                 }
                 connection.commit();
@@ -384,9 +436,25 @@ public final class LibraryStore {
     }
 
     public void saveTags(Path path, TrackTags tags) throws SQLException {
+        saveTrackAnalysis(path, tags, null);
+    }
+
+    public boolean saveTrackAnalysis(Path path, TrackTags tags, String musicalKey) throws SQLException {
         try (Connection connection = connect(); PreparedStatement update = connection.prepareStatement(SAVE_TAGS)) {
             connection.setAutoCommit(false);
-            try { bindTags(update,path,tags); update.executeUpdate(); AudioFeatureStore.save(connection,path,tags); connection.commit(); }
+            try {
+                bindTags(update, path, tags);
+                if (update.executeUpdate() == 0) {
+                    connection.rollback();
+                    return false;
+                }
+                AudioFeatureStore.save(connection, path, tags);
+                if (musicalKey != null) {
+                    MetadataStore.edit(connection, path, Map.of(TrackMetadata.Field.KEY, musicalKey), null);
+                }
+                connection.commit();
+                return true;
+            }
             catch (SQLException error) { connection.rollback(); throw error; }
         }
     }
@@ -397,9 +465,11 @@ public final class LibraryStore {
         update.setInt(3, tags.analyzed() ? 1 : 0);
         update.setLong(4, tags.fileSize());
         update.setLong(5, tags.modifiedMillis());
-        update.setString(6, path.toString());
-        update.setLong(7, tags.fileSize());
-        update.setLong(8, tags.modifiedMillis());
+        update.setInt(6, TrackTags.ANALYSIS_VERSION);
+        update.setString(7, tags.failure() == null ? null : tags.failure().name());
+        update.setString(8, path.toString());
+        update.setLong(9, tags.fileSize());
+        update.setLong(10, tags.modifiedMillis());
     }
 
     /** Manual corrections take priority over future scans of the original file. */
@@ -407,7 +477,9 @@ public final class LibraryStore {
         throws SQLException {
         try (Connection connection = connect(); PreparedStatement update = connection.prepareStatement("""
             UPDATE tracks SET genre=?, genre_override=1, energy=?, activity=?, analyzed=1,
-                file_size=?, file_modified=?, tags_override=1, analysis_version=2 WHERE path=?
+                file_size=CASE WHEN analysis_failure IS NULL THEN ? ELSE file_size END,
+                file_modified=CASE WHEN analysis_failure IS NULL THEN ? ELSE file_modified END,
+                tags_override=1, analysis_version=MAX(analysis_version,2) WHERE path=?
             """)) {
             connection.setAutoCommit(false);
             update.setString(1, genre);
@@ -469,7 +541,13 @@ public final class LibraryStore {
                 "SELECT p.id, p.name, p.folder_id, p.description, p.updated_at,r.rule_json FROM playlists p " +
                 "LEFT JOIN smart_playlist_rules r ON p.id=r.playlist_id ORDER BY p.name COLLATE NOCASE,p.id");
                  PreparedStatement items = connection.prepareStatement(
-                    "SELECT path FROM playlist_items WHERE playlist_id=? ORDER BY position");
+                    """
+                    SELECT COALESCE(direct.path, alias.path, managed.path, p.path)
+                    FROM playlist_items p LEFT JOIN tracks direct ON direct.path=p.path
+                    LEFT JOIN managed_aliases a ON a.previous=p.path LEFT JOIN tracks alias ON alias.path=a.current
+                    LEFT JOIN managed_files m ON m.source=p.path LEFT JOIN tracks managed ON managed.path=m.managed
+                    WHERE p.playlist_id=? ORDER BY p.position
+                    """);
                  ResultSet rows = query.executeQuery()) {
                 while (rows.next()) {
                     long id = rows.getLong(1);
@@ -541,9 +619,61 @@ public final class LibraryStore {
             return .72;
         }
     }
+
+    public Path loadManagedRoot() throws Exception {
+        initialize();
+        try (var connection = connect(); var query = connection.createStatement();
+             var row = query.executeQuery("SELECT value FROM app_state WHERE key='managed_library_root'")) {
+            return row.next() ? Path.of(row.getString(1)) : null;
+        }
+    }
+
+    public void saveManagedRoot(Path root) throws Exception {
+        initialize();
+        try (var connection = connect(); var query = connection.prepareStatement("""
+            INSERT INTO app_state(key,value) VALUES('managed_library_root',?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value
+            """)) {
+            query.setString(1, root.toString());
+            query.executeUpdate();
+        }
+    }
     public void saveVolume(double volume) throws SQLException {
         try (var connection = connect(); var query = connection.prepareStatement("INSERT INTO app_state VALUES('volume',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")) {
             query.setString(1, Double.toString(sangitam.desktop.playback.AudioGain.clamp(volume))); query.executeUpdate();
+        }
+    }
+
+    SpectrumPreferences loadSpectrumPreferences() throws SQLException {
+        try (var connection = connect(); var query = connection.createStatement();
+             var row = query.executeQuery("""
+                 SELECT (SELECT value FROM app_state WHERE key='spectrum_palette'),
+                        (SELECT value FROM app_state WHERE key='spectrum_color_distribution'),
+                        (SELECT value FROM app_state WHERE key='spectrum_height_distribution'),
+                        (SELECT value FROM app_state WHERE key='spectrum_primary_color'),
+                        (SELECT value FROM app_state WHERE key='spectrum_secondary_color')
+                 """)) {
+            return row.next() ? SpectrumPreferences.fromSaved(row.getString(1), row.getString(2), row.getString(3),
+                row.getString(4), row.getString(5))
+                : SpectrumPreferences.defaults();
+        }
+    }
+
+    void saveSpectrumPreferences(SpectrumPreferences value) throws SQLException {
+        try (var connection = connect(); var query = connection.prepareStatement(
+                """
+                INSERT INTO app_state VALUES
+                    ('spectrum_palette',?), ('spectrum_color_distribution',?), ('spectrum_height_distribution',?),
+                    ('spectrum_primary_color',?), ('spectrum_secondary_color',?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """)) {
+            var preset = value.palette();
+            query.setString(1, preset == null ? SpectrumPreferences.Palette.SLATE.name() : preset.name());
+            query.setString(2, value.colors().name());
+            query.setString(3, value.heights().name());
+            query.setString(4, Integer.toString(value.primary()));
+            query.setString(5, Integer.toString(value.secondary()));
+            query.executeUpdate();
         }
     }
 

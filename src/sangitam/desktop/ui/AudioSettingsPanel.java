@@ -259,6 +259,8 @@ final class AudioSettingsPanel extends JPanel {
         }
     }
 
+    boolean isSaving() { return saving; }
+
     void cancel() {
         if (saving) return;
         preview.cancel();

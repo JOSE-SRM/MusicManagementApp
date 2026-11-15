@@ -30,7 +30,7 @@ public final class DashboardPanel extends JPanel {
         setBackground(Theme.BLACK);
         setBorder(Theme.padding(28, 30, 24, 30));
         add(header(importMedia), BorderLayout.NORTH);
-        JScrollPane scroll = new JScrollPane(content(onPlay, notify, onBuild, queueActions));
+        JScrollPane scroll = new PixelScrollPane(content(onPlay, notify, onBuild, queueActions));
         scroll.setBorder(null);
         scroll.getViewport().setBackground(Theme.BLACK);
         scroll.getVerticalScrollBar().setUnitIncrement(16);
@@ -40,6 +40,7 @@ public final class DashboardPanel extends JPanel {
 
     public void setAnalysisCatalog(sangitam.desktop.library.LibraryService.Catalog catalog) { composer.setCatalog(catalog); queue.setAnalysis(catalog.tags()); }
     public void setAnalyzeAction(Runnable action) { composer.setAnalyzeAction(action); }
+    public void setCancelAnalysisAction(Runnable action) { composer.setCancelAnalysisAction(action); }
     public void setContext(String text) { composer.showContext(text); }
     public void setTaste(java.util.Map<java.nio.file.Path,Integer> ratings) { queue.setTaste(ratings); }
     public void setTracks(List<Track> tracks) {

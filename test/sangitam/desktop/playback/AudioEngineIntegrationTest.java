@@ -22,6 +22,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -83,6 +85,57 @@ class AudioEngineIntegrationTest {
         }
     }
 
+    @Test void vlcPlaysLocalAudioWithNonAsciiFilename() throws Exception {
+        Path file = Files.move(tone(12), directory.resolve("Tone 'Path\u00e9tique' [one].wav"));
+        var track = new Track(file, "Tone", "Test", "Test", 12, "WAV");
+        try (var player = new VlcjPlayerService()) {
+            player.setVolume(0);
+            player.play(track, 2);
+            await(() -> player.state().status() == PLAYING && player.state().positionSeconds() >= 2,
+                "local path and resume position");
+            assertEquals(AudioStatus.Backend.VLC, player.audioStatus().backend());
+            await(() -> player.state().seekable(), "seekable");
+            player.seek(0.5);
+            await(() -> Math.abs(player.state().positionSeconds() - 6) < 0.5, "seek");
+            player.stop();
+            await(() -> player.state().status() == STOPPED, "stop");
+            Files.delete(file);
+            player.play(track);
+            await(() -> player.state().status() == ERROR, "unavailable file");
+            assertTrue(player.state().error().contains("File is unavailable"));
+        }
+    }
+
+    @Test void vlcPlaysAndSeeksLongManagedWindowsPaths() throws Exception {
+        org.junit.jupiter.api.Assumptions.assumeTrue(System.getProperty("os.name", "").startsWith("Windows"));
+        Path folders = directory.resolve("Long recording folder with accents".repeat(3))
+            .resolve("Beethoven — orchestral recording ".repeat(3).strip());
+        Files.createDirectories(folders);
+        Path file = Files.move(tone(12), folders.resolve("01 - Pathétique ♭.wav"));
+        assertTrue(file.toString().length() > 260);
+        var track = new Track(file, "Long managed track", "Test", "Test", 12, "WAV");
+        try (var player = new VlcjPlayerService()) {
+            var receivedBands = new AtomicReference<>(new float[0]);
+            player.setVolume(0);
+            player.setSpectrumListener(receivedBands::set);
+            player.play(track, 2);
+            await(() -> player.state().status() == PLAYING && player.state().positionSeconds() >= 2
+                && player.state().seekable(), "long-path play");
+            await(() -> receivedBands.get().length > 0, "long-path spectrum");
+            player.seek(.5);
+            await(() -> Math.abs(player.state().positionSeconds() - 6) < .5, "long-path seek");
+            player.setSpectrumListener(null);
+            player.stop();
+            await(() -> player.state().status() == STOPPED, "long-path stop");
+        }
+        await(() -> {
+            try {
+                Files.deleteIfExists(file);
+                return true;
+            } catch (IOException stillReleasing) { return false; }
+        }, "long-path file handle released");
+    }
+
     @Test void javaFxEffectsPreserveTransportAndReportNormalizationUnavailable() throws Exception {
         try (var player = new JavaFxPlayerService()) {
             exercise(player);
@@ -91,14 +144,67 @@ class AudioEngineIntegrationTest {
         }
     }
 
+    @Test void nativeSpectrumTracksSeekPauseAndTrackChangesWithoutReplacingPlayback() throws Exception {
+        var track = new Track(tone(12, 3000), "Two tones", "Test", "Test", 12, "WAV");
+        var other = new Track(tone(14), "Other tone", "Test", "Test", 14, "WAV");
+        var samples = new AtomicReference<>(new float[0]);
+        var frames = new AtomicInteger();
+        var clears = new AtomicInteger();
+        try (var player = new VlcjPlayerService()) {
+            player.setVolume(0);
+            player.play(track, 2);
+            await(() -> player.state().status() == PLAYING && player.state().seekable(), "start");
+            player.setSpectrumListener(value -> {
+                samples.set(value);
+                if (value.length == 0) clears.incrementAndGet();
+                else frames.incrementAndGet();
+            });
+            await(() -> hasPeak(samples.get(), 55), "1 kHz native spectrum");
+            int initialFrames = frames.get();
+            int initialClears = clears.get();
+            Thread.sleep(1200);
+            assertTrue(frames.get() - initialFrames >= 30, "sustained delivery above 25 frames per second");
+            assertEquals(initialClears, clears.get(), "continuous playback must not clear the spectrum");
+            player.seek(0.65);
+            await(() -> player.state().positionSeconds() >= 7.7, "seek into 3 kHz passage");
+            await(() -> hasPeak(samples.get(), 74), "3 kHz native spectrum after seek");
+            player.setAudioSettings(new AudioSettings(true, AudioSettings.defaults().bands(), -3, AudioSettings.ReplayGain.OFF));
+            player.pause();
+            await(() -> player.state().status() == PAUSED && samples.get().length == 0, "pause clears samples");
+            player.play(other);
+            await(() -> player.state().status() == PLAYING && hasPeak(samples.get(), 55), "different track replaces samples");
+            player.setSpectrumListener(null);
+            samples.set(new float[0]);
+            Thread.sleep(450);
+            assertEquals(0, samples.get().length);
+            assertEquals(PLAYING, player.state().status());
+            assertNull(player.audioStatus().error());
+            player.stop();
+            await(() -> player.state().status() == STOPPED, "stop");
+        }
+    }
+
+    private static boolean hasPeak(float[] bands, int expected) {
+        if (bands.length != 96) return false;
+        int max = -1;
+        for (int i = 0; i < bands.length; i++) if (max < 0 || bands[i] > bands[max]) max = i;
+        return Math.abs(max - expected) <= 1;
+    }
+
     private void exercise(PlayerService player) throws Exception {
         Track track = new Track(tone(12), "Tone", "Test", "Test", 12, "WAV");
         var bands = new ArrayList<>(AudioSettings.defaults().bands());
         bands.set(5, 6d);
         player.setAudioSettings(new AudioSettings(true, bands, -3, AudioSettings.ReplayGain.TRACK));
         player.setVolume(0.5);
+        var fallbackSpectrum = new AtomicReference<>(new float[0]);
+        if (player instanceof JavaFxPlayerService) player.setSpectrumListener(fallbackSpectrum::set);
         player.play(track);
         await(() -> player.state().status() == PLAYING, "start");
+        if (player instanceof JavaFxPlayerService) {
+            await(() -> fallbackSpectrum.get().length == 96, "96-band JavaFX spectrum");
+            player.setSpectrumListener(null);
+        }
         assertNull(player.audioStatus().error());
         player.pause();
         await(() -> player.state().status() == PAUSED, "pause");
@@ -139,9 +245,14 @@ class AudioEngineIntegrationTest {
     }
 
     private Path tone(int seconds) throws Exception {
+        return tone(seconds, 1000);
+    }
+
+    private Path tone(int seconds, int latterFrequency) throws Exception {
         byte[] bytes = new byte[44_100 * 2 * seconds];
         for (int i = 0; i < bytes.length / 2; i++) {
-            short value = (short) (2000 * Math.sin(2 * Math.PI * 1000 * i / 44_100));
+            int frequency = i < bytes.length / 4 ? 1000 : latterFrequency;
+            short value = (short) (2000 * Math.sin(2 * Math.PI * frequency * i / 44_100));
             bytes[i * 2] = (byte) value;
             bytes[i * 2 + 1] = (byte) (value >>> 8);
         }

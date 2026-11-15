@@ -1,15 +1,22 @@
 package sangitam.desktop.ui;
 
 import sangitam.desktop.library.LibraryService;
+import sangitam.desktop.library.AudioAnalyzer;
+import sangitam.desktop.library.MoodTags;
+import sangitam.desktop.discovery.MusicBrainzProvider;
 import sangitam.desktop.app.StartupTrace;
 import sangitam.desktop.history.HistoryService;
 import sangitam.desktop.history.QualifiedPlayTracker;
 import sangitam.desktop.history.ListeningClock;
 import sangitam.desktop.model.Track;
+import sangitam.desktop.model.TrackMetadata;
+import sangitam.desktop.model.MusicalKey;
+import sangitam.desktop.model.TrackTags;
 import sangitam.desktop.model.LibraryCollections;
 import sangitam.desktop.model.LibraryCollections.Key;
 import sangitam.desktop.model.Playlist;
 import sangitam.desktop.model.PlaybackMemory;
+import sangitam.desktop.model.SpectrumPreferences;
 import sangitam.desktop.playback.VlcjPlayerService;
 import sangitam.desktop.playback.GlobalMediaKeys;
 import sangitam.desktop.playback.WindowsMediaBridge;
@@ -17,9 +24,11 @@ import sangitam.desktop.playback.PlaybackState;
 import sangitam.desktop.playback.PlayerService;
 import sangitam.desktop.playback.AudioGain;
 import sangitam.desktop.playback.AudioSettings;
+import sangitam.desktop.playback.ShuffleOrder;
 import sangitam.desktop.storage.AudioSettingsStore;
 import sangitam.desktop.session.SessionPlanner;
 import sangitam.desktop.storage.AppPaths;
+import sangitam.desktop.storage.AppPreferences;
 import sangitam.desktop.storage.CollectionStore;
 import sangitam.desktop.storage.LibraryStore;
 import sangitam.desktop.storage.LibraryDashboardStore;
@@ -30,6 +39,10 @@ import sangitam.desktop.model.ShortcutBindings;
 import sangitam.desktop.model.ShortcutBindings.Command;
 import sangitam.desktop.model.SmartPlaylistRule;
 import sangitam.desktop.storage.PlaybackMemoryService;
+import sangitam.desktop.storage.RecordingMatchStore;
+import sangitam.desktop.storage.SheetMusicStore;
+import sangitam.desktop.storage.ManagedScoreStore;
+import sangitam.desktop.discovery.MutopiaScores;
 
 import javax.swing.*;
 import java.awt.*;
@@ -41,6 +54,8 @@ import java.awt.event.WindowEvent;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -55,6 +70,13 @@ public final class MainFrame extends JFrame {
     private final JPanel workspace = new JPanel(new BorderLayout());
     private final NotificationCenter notifications = new NotificationCenter();
     private final LibraryStore store = new LibraryStore(AppPaths.libraryDatabase());
+    private final MusicBrainzProvider recordingProvider = new MusicBrainzProvider();
+    private boolean automaticIdentification, identificationTouched;
+    private Map<Path, sangitam.desktop.model.FileStamp> identifiedStamps = Map.of();
+    private final Timer identificationRetry = new Timer(30 * 60 * 1000,
+        event -> this.library.identifyInBackground(automaticIdentification, false, notifications::show));
+    private final Timer managedRefresh = new Timer(5 * 60 * 1000,
+        event -> this.library.syncManaged(notifications::show));
     private final CollectionStore collections = new CollectionStore(store);
     private final LibraryDashboardStore homeStore = new LibraryDashboardStore(store);
     private final SmartPlaylistStore smartPlaylists = new SmartPlaylistStore(store);
@@ -65,6 +87,14 @@ public final class MainFrame extends JFrame {
     private PlayerService player;
     private final AudioSettingsStore audioSettingsStore = new AudioSettingsStore(AppPaths.libraryDatabase().resolveSibling("audio.properties"));
     private AudioSettings audioSettings = AudioSettings.defaults();
+    private AudioSettingsDialog audioSettingsDialog;
+    private SheetMusicDialog sheetMusic;
+    private final MutopiaScores scoreProvider = new MutopiaScores();
+    private Path sheetMusicTrack;
+    private Path observedScorePlayback;
+    private boolean exitAfterAudioSettings;
+    private NavigationPanel navigation;
+    private UserGuideDialog userGuide;
     private boolean audioSettingsReady;
     private SwingWorker<SessionPlanner.Plan,Void> sessionBuilder;
     private long sessionBuildGeneration;
@@ -97,6 +127,7 @@ public final class MainFrame extends JFrame {
     private PlayerBar playerBar;
     private SpectrumPanel spectrumPanel;
     private boolean spectrumVisible;
+    private final SpectrumMenu spectrumMenu;
     private AppMenuBar menuBar;
     private ShortcutBindings shortcuts;
     private final SpaceTransport spaceTransport = new SpaceTransport(() -> isFocused() && !servicesClosed
@@ -106,7 +137,11 @@ public final class MainFrame extends JFrame {
     private List<Track> tracks = List.of();
     private Track selectedTrack;
     private List<SessionPlanner.Choice> sessionQueue = List.of();
-    private final Set<Integer> sessionPlayed = new HashSet<>();
+    private final ShuffleOrder<ShuffleEntry> shuffle = new ShuffleOrder<>(new java.util.Random());
+    private List<ShuffleEntry> sessionShuffleEntries = List.of();
+    private Map<ShuffleEntry, Integer> shuffleIndices = Map.of();
+    private Set<Path> shuffledCatalogPaths = Set.of();
+    private Set<Path> shuffledUnavailable = Set.of();
     private int sessionIndex = -1;
     private boolean sessionActive;
     private boolean draftPreview;
@@ -131,7 +166,7 @@ public final class MainFrame extends JFrame {
         super("Sangitam — Music Management");
         this.startupTrace = startupTrace;
         setIconImage(AppIcons.applicationIcon(64));
-        setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+        setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
         setMinimumSize(new Dimension(960, 640));
         setSize(1360, 820);
         setLocationRelativeTo(null);
@@ -145,8 +180,27 @@ public final class MainFrame extends JFrame {
             notifications::show, this::closeApp, this::openAudioSettings);
         setJMenuBar(menuBar);
         menuBar.setKeyboardShortcutsAction(this::openShortcuts);
+        menuBar.setGuideAction(this::openUserGuide);
+        menuBar.setManagedCopyAction(() -> new ManagedLibraryDialog(this, library, store, notifications::show).setVisible(true));
+        menuBar.setIdentificationActions(this::toggleAutomaticIdentification, () ->
+            library.identifyInBackground(automaticIdentification, true, notifications::show));
+        menuBar.setNavigationAction(() -> navigation.setCollapsed(!navigation.isCollapsed()));
+        navigation.setCollapseListener(collapsed -> menuBar.setNavigationSelected(!collapsed));
         menuBar.setRecentAction(() -> { if (workspaceReady) { if (!queueVisible) toggleQueueHistory(); queueHistory.showRecent(); } });
-        menuBar.setPlayerVisibilityAction(() -> { Container transport = playerBar.getParent(); transport.setVisible(!transport.isVisible()); transport.getParent().revalidate(); });
+        menuBar.setPlayerVisibilityAction(() -> {
+            Container transport = playerBar.getParent();
+            transport.setVisible(!transport.isVisible());
+            transport.getParent().revalidate();
+            if (spectrumVisible) refreshSpectrumListener();
+        });
+        spectrumMenu = new SpectrumMenu(this::setSpectrumVisible, preferences -> {
+            applySpectrumPreferences(preferences);
+            memory.saveSpectrumPreferences(preferences, () -> notifications.show("Could not save the spectrum settings"));
+        }, (title, initial) -> JColorChooser.showDialog(this, title, initial, false));
+        spectrumMenu.setAppearanceReady(false);
+        menuBar.addSpectrumMenu(spectrumMenu.view());
+        playerBar.setSpectrumMenu(spectrumMenu);
+        spectrumMenu.attach(spectrumPanel);
         menuBar.setSortAction(index -> { if (workspaceReady) { libraryPanel.setRailVisible(true); libraryPanel.selectSort(index); } });
         installKeyboardShortcuts();
         KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(spaceTransport);
@@ -157,7 +211,7 @@ public final class MainFrame extends JFrame {
             @Override public void componentResized(ComponentEvent event) { updateResponsiveLayout(); }
         });
         addWindowListener(new WindowAdapter() {
-            @Override public void windowClosing(WindowEvent event) { closeServices(); }
+            @Override public void windowClosing(WindowEvent event) { closeApp(); }
         });
         globalMediaKeys = new GlobalMediaKeys(new GlobalMediaKeys.Actions() {
             @Override public void playPause() { togglePlayback(); }
@@ -214,8 +268,7 @@ public final class MainFrame extends JFrame {
             track -> libraryPanel.trackMenu(track));
         artistPage = new ArtistPanel(store, (songs, shuffle) -> {
             setShuffle(shuffle);
-            if (shuffle) { var shuffled = new java.util.ArrayList<>(songs); java.util.Collections.shuffle(shuffled); playCollection(shuffled, 0); }
-            else playCollection(songs, 0);
+            if (!songs.isEmpty()) playCollection(songs, shuffle ? ThreadLocalRandom.current().nextInt(songs.size()) : 0);
         }, this::openCollection, this::openArtist, track -> libraryPanel.trackMenu(track), notifications::show);
         artistPage.onEnriched(() -> library.refreshFromStore(ignored -> { }));
         artistPage.setDiscoveryAction(name -> { showScreen("discover"); discover.prepareArtistSearch(name); });
@@ -238,6 +291,13 @@ public final class MainFrame extends JFrame {
                 return values.size()==1 ? values.getFirst() : null;
             }
             @Override public void editDetails(List<Track> tracks, boolean group) { editTrackDetails(tracks, group); }
+            @Override public void reanalyze(Track track) { reanalyzeTrack(track); }
+            @Override public void identifyRecording(Track track) {
+                new RecordingLookupDialog(MainFrame.this, track.path(), new RecordingMatchStore(store),
+                    recordingProvider, library, notifications::show).setVisible(true);
+            }
+            @Override public void sheetMusic(Track track) { openSheetMusic(track, false); }
+            @Override public void downloadSheetMusic(Track track) { openSheetMusic(track, true); }
             @Override public void restoreDetails(List<Track> tracks) { restoreTrackDetails(tracks); }
             @Override public void remove(List<Path> paths, Path scope) {
                 library.removeFromLibrary(paths, scope, notifications::show);
@@ -251,9 +311,8 @@ public final class MainFrame extends JFrame {
             @Override public SmartPlaylistStore.Preview previewSmart(SmartPlaylistRule rule) throws Exception { return smartPlaylists.preview(rule); }
         });
         libraryPanel.onFirstPage(() -> { if (firstCatalog && !firstLibraryPage) { firstLibraryPage = true; startupTrace.mark("library_page"); } });
-        queueHistory = new QueueHistoryPanel(index -> {
-            if (index >= 0 && index < sessionQueue.size()) { sessionActive = true; pendingLibraryQueue = false; playSessionIndex(index); }
-        }, this::playTrack, track -> libraryPanel.trackMenu(track), this::toggleQueueHistory);
+        queueHistory = new QueueHistoryPanel(this::playQueueRow, this::playTrack,
+            track -> libraryPanel.trackMenu(track), this::toggleQueueHistory);
         libraryRail = new JSplitPane(JSplitPane.VERTICAL_SPLIT, libraryPanel, null);
         libraryRail.setBorder(null); libraryRail.setDividerSize(0); libraryRail.setResizeWeight(.5);
         libraryPanel.setExpansionListener(expanded -> {
@@ -267,12 +326,25 @@ public final class MainFrame extends JFrame {
         workspace.repaint();
         updateResponsiveLayout();
         library.addCatalogListener(this::onLibraryChanged);
+        new SwingWorker<Boolean, Void>() {
+            @Override protected Boolean doInBackground() { return AppPreferences.backgroundIdentification(); }
+            @Override protected void done() {
+                if (servicesClosed || identificationTouched) return;
+                try { setAutomaticIdentification(get()); }
+                catch (Exception error) { notifications.show("Could not load recording identification settings."); }
+            }
+        }.execute();
         memory.load(this::restorePlayback, notifications::show);
         volumeSave.setRepeats(false);
         memory.loadVolume(volume -> { if (!volumeTouched) { desiredVolume = volume; playerBar.setVolumeFraction(volume); if (player != null) player.setVolume(volume); } });
+        memory.loadSpectrumPreferences(this::applySpectrumPreferences, () -> {
+            spectrumMenu.setAppearanceReady(true);
+            notifications.show("Could not load the spectrum settings");
+        });
         listeningSave.start();
         library.loadInitial(notifications::show);
         dashboard.setAnalyzeAction(() -> library.analyzeNow(notifications::show));
+        dashboard.setCancelAnalysisAction(library::cancelAnalysis);
         loadAudioSettings();
         loadShortcuts();
     }
@@ -306,11 +378,13 @@ public final class MainFrame extends JFrame {
             @Override public void toggleRepeat() { setRepeat(!repeatCurrent); }
             @Override public void audioSettings() { openAudioSettings(); }
             @Override public void openTrack(Track track) { openPlayingTrack(track); }
+            @Override public JPopupMenu trackMenu(Track track) { return libraryPanel == null ? null : libraryPanel.trackMenu(track); }
             @Override public void openArtist(String name) { MainFrame.this.openArtist(name); }
             @Override public void toggleLiked(Track track) {
                 if (!workspaceReady) return;
-                var key = new Key(sangitam.desktop.model.LibraryCollections.Kind.SONG, track.path().toString());
-                changeCollections("Liked Songs updated", store -> store.togglePinned(key), null);
+                boolean like = !libraryPanel.collections().likes().contains(track.path());
+                changeCollections(like ? "Added to Liked Songs" : "Removed from Liked Songs",
+                    store -> store.setLiked(track.path(), like), null);
             }
             @Override public void toggleQueue() { toggleQueueHistory(); }
             @Override public void toggleSpectrum() {
@@ -319,7 +393,19 @@ public final class MainFrame extends JFrame {
         });
         JPanel lower = new JPanel(new BorderLayout());
         spectrumPanel = new SpectrumPanel(); spectrumPanel.setVisible(false);
-        JPanel transport = new JPanel(new BorderLayout()); transport.add(playerBar, BorderLayout.CENTER); transport.add(spectrumPanel, BorderLayout.SOUTH);
+        JPanel transport = new JPanel(new BorderLayout()) {
+            @Override protected void paintComponent(Graphics graphics) {
+                super.paintComponent(graphics);
+                Graphics2D g = (Graphics2D) graphics.create();
+                g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g.setColor(Theme.SURFACE);
+                g.fillRoundRect(0, 0, getWidth(), getHeight(), 24, 24);
+                g.dispose();
+            }
+        };
+        transport.setOpaque(false);
+        transport.add(playerBar, BorderLayout.CENTER);
+        transport.add(spectrumPanel, BorderLayout.SOUTH);
         lower.add(transport, BorderLayout.CENTER);
         lower.add(notifications, BorderLayout.SOUTH);
         root.add(lower, BorderLayout.SOUTH);
@@ -327,8 +413,9 @@ public final class MainFrame extends JFrame {
         workspace.setBackground(Theme.BLACK);
         screens.add(UiFactory.label("Loading your music…", Theme.HEADING, Theme.TEXT_MUTED), "loading");
         workspace.add(screens, BorderLayout.CENTER);
-        root.add(new NavigationPanel(this::showScreen, this::openImportDialog,
-            this::toggleLibrary, this::openCommandPalette, this::openSettings), BorderLayout.WEST);
+        navigation = new NavigationPanel(this::showScreen, this::openImportDialog,
+            this::toggleLibrary, this::openCommandPalette, this::openSettings);
+        root.add(navigation, BorderLayout.WEST);
         root.add(workspace, BorderLayout.CENTER);
         return root;
     }
@@ -343,13 +430,59 @@ public final class MainFrame extends JFrame {
         playerBar.setCoverState(catalog.stamps(), catalog.unavailable());
         queueHistory.setCatalog(catalog);
         if (rediscover != null) rediscover.setCatalog(catalog);
-        if (!firstCatalog && library.initialLoaded()) { firstCatalog = true; startupTrace.mark("catalog_" + updated.size()); }
+        if (!firstCatalog && library.initialLoaded()) {
+            firstCatalog = true;
+            startupTrace.mark("catalog_" + updated.size());
+            library.syncManaged(notifications::show);
+            managedRefresh.start();
+        }
         refreshPlaylists(); // smart membership follows imports, edits, availability and recorded plays
+        if (!identifiedStamps.equals(catalog.stamps())) {
+            identifiedStamps = catalog.stamps();
+            library.identifyInBackground(automaticIdentification, false, notifications::show);
+        }
         if (selectedTrack != null) {
-            selectedTrack = catalog.byPath().get(selectedTrack.path());
+            selectedTrack = catalog.currentTrack(selectedTrack.path());
         }
         restoreLastIfAvailable();
         if (selectedTrack == null && !updated.isEmpty()) selectedTrack = updated.get(0);
+        if (shuffleEnabled && (!shuffledUnavailable.equals(catalog.unavailable())
+            || (!usesSessionShuffle() && !shuffledCatalogPaths.equals(catalog.byPath().keySet())))) {
+            prepareShuffle(false);
+            updatePlaybackQueue();
+        }
+    }
+
+    private void toggleAutomaticIdentification(boolean enabled) {
+        identificationTouched = true;
+        if (enabled && JOptionPane.showConfirmDialog(this,
+            "Send track titles and known details to MusicBrainz during background identification?\n"
+                + "With AcoustID configured, Sangitam can also send fingerprints. Audio files and paths stay local.",
+            "Enable automatic identification", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) {
+            menuBar.setAutomaticIdentification(false);
+            return;
+        }
+        setAutomaticIdentification(enabled);
+        new SwingWorker<Void, Void>() {
+            @Override protected Void doInBackground() {
+                AppPreferences.setBackgroundIdentification(enabled);
+                return null;
+            }
+        }.execute();
+    }
+
+    private void setAutomaticIdentification(boolean enabled) {
+        if (automaticIdentification == enabled) return;
+        automaticIdentification = enabled;
+        menuBar.setAutomaticIdentification(enabled);
+        if (enabled) {
+            identificationRetry.start();
+            notifications.show("Automatic recording identification is running in the background.");
+        } else {
+            identificationRetry.stop();
+            library.cancelMetadataLookups();
+        }
+        library.identifyInBackground(enabled, false, notifications::show);
     }
 
     private void restorePlayback(PlaybackMemory saved) {
@@ -375,12 +508,23 @@ public final class MainFrame extends JFrame {
         if (servicesClosed) return;
         if (state.track() != null && selectedTrack != null && state.track().path().equals(selectedTrack.path()))
             state = new PlaybackState(selectedTrack, state.status(), state.positionSeconds(), state.durationSeconds(), state.error(), state.seekable());
+        if (sheetMusic != null) {
+            Path now = state.track() == null ? null : state.track().path();
+            if (now != null && !now.equals(observedScorePlayback)
+                && state.status() != PlaybackState.Status.ERROR && scorePlayback(state).track() == null
+                && selectedTrack != null && selectedTrack.path().equals(state.track().path())) {
+                sheetMusicTrack = state.track().path();
+                sheetMusic.showTrack(state.track(), false);
+            }
+            if (state.status() != PlaybackState.Status.ERROR) observedScorePlayback = now;
+            sheetMusic.updatePlayback(scorePlayback(state));
+        }
         listeningClock.observe(state);
         windowsMedia.publish(state, shuffleEnabled, repeatCurrent);
         if (player != null) playerBar.setMaximumVolume(player.maximumVolume());
         if (state.status() == PlaybackState.Status.IDLE && remembered != null && !userSelectedTrack) return;
         playerBar.setState(state);
-        spectrumPanel.setStatus(player != null && player.supportsSpectrum(), state.status() == PlaybackState.Status.PLAYING);
+        updateSpectrumStatus(state);
         updateLiked(state.track());
         if (state.track() != null && state.status() == PlaybackState.Status.PLAYING
             && Math.abs(state.positionSeconds() - lastSavedPosition) >= 5) {
@@ -394,27 +538,33 @@ public final class MainFrame extends JFrame {
             && state.track().path().equals(selectedTrack.path())
             && playTracker.observe(state, playGeneration))
             library.recordPlay(state.track().path(), notifications::show);
-        if (state.status() == PlaybackState.Status.ERROR && sessionActive
-            && state.track() != null && selectedTrack != null
-            && state.track().path().equals(selectedTrack.path())) {
+        boolean selectedState = state.track() != null && selectedTrack != null
+            && state.track().path().equals(selectedTrack.path());
+        boolean shuffledState = selectedState && shuffleEnabled && !pendingLibraryQueue
+            && shuffle.current() != null && shuffle.current().track().path().equals(state.track().path());
+        if (shuffledState && state.status() == PlaybackState.Status.PLAYING && shuffle.started()) updatePlaybackQueue();
+        if (shuffledState && state.status() == PlaybackState.Status.ERROR) {
+            shuffle.failed();
+            updatePlaybackQueue();
+            long failedGeneration = playGeneration;
+            SwingUtilities.invokeLater(() -> {
+                if (!servicesClosed && shuffleEnabled && playGeneration == failedGeneration) nextTrack();
+            });
+        } else if (!shuffleEnabled && state.status() == PlaybackState.Status.ERROR && sessionActive && selectedState) {
             if (sessionIndex + 1 < sessionQueue.size()) SwingUtilities.invokeLater(this::nextTrack);
             else sessionActive = false;
         }
-        if (state.status() == PlaybackState.Status.ENDED && state.track() != null
-            && selectedTrack != null && state.track().path().equals(selectedTrack.path())) {
+        if (state.status() == PlaybackState.Status.ENDED && selectedState) {
             if (repeatCurrent) {
-                playGeneration++;
-                if (sessionActive) playSessionIndex(sessionIndex);
-                else playTrack(selectedTrack);
+                startTrackPlayback(selectedTrack);
+            } else if (shuffleEnabled) {
+                nextTrack();
             } else if (sessionActive) {
-                if (shuffleEnabled) nextTrack();
-                else if (sessionIndex + 1 < sessionQueue.size()) playSessionIndex(sessionIndex + 1);
+                if (sessionIndex + 1 < sessionQueue.size()) playSessionIndex(sessionIndex + 1);
                 else {
                     sessionActive = false;
                     notifications.show("Session complete");
                 }
-            } else if (shuffleEnabled && tracks.size() > 1) {
-                nextTrack();
             } else {
                 Track next = adjacentAvailable(state.track(), 1);
                 if (next != null) playTrack(next);
@@ -431,8 +581,19 @@ public final class MainFrame extends JFrame {
             showQueue();
             return;
         }
+        boolean changedSource = sessionActive;
         sessionActive = false;
-        if (queueHistory != null) queueHistory.setQueue(sessionQueue, -1);
+        if (shuffleEnabled) {
+            if (changedSource) prepareShuffle(true);
+            shuffle.select(new ShuffleEntry(track, 0));
+        }
+        updatePlaybackQueue();
+        startTrackPlayback(track);
+    }
+
+    private void startTrackPlayback(Track track) {
+        Track current = library.catalog().currentTrack(track.path());
+        if (current != null) track = current;
         userSelectedTrack = true;
         selectedTrack = track;
         playGeneration++;
@@ -444,7 +605,7 @@ public final class MainFrame extends JFrame {
         long generation=tasteGeneration;
         new SwingWorker<Map<Path,Integer>,Void>() {
             protected Map<Path,Integer> doInBackground() throws Exception { synchronized(store){store.initialize();return new sangitam.desktop.storage.TasteStore(store).ratings();} }
-            protected void done(){if(servicesClosed||generation!=tasteGeneration)return;try{tasteRatings=get();dashboard.setTaste(tasteRatings);}catch(Exception error){notifications.show("Saved taste preferences could not be loaded");}}
+            protected void done(){if(servicesClosed||generation!=tasteGeneration)return;try{tasteRatings=get();dashboard.setTaste(tasteRatings);updateRediscoverTaste();}catch(Exception error){notifications.show("Saved taste preferences could not be loaded");}}
         }.execute();
     }
     private void rateTaste(List<Track> tracks,int rating) {
@@ -476,7 +637,7 @@ public final class MainFrame extends JFrame {
                     var playable=source.tracks().stream().filter(t->!source.unavailable().contains(t.path())&&Files.isRegularFile(t.path())).toList();
                     return planner.build(request,playable,source.tags(),source.playCounts(),context);
                 }
-                protected void done(){if(servicesClosed||isCancelled()||generation!=sessionBuildGeneration)return;try{var plan=get();draftPreview=sessionActive;if(!sessionActive){sessionQueue=plan.choices();pendingLibraryQueue=true;sessionIndex=-1;}dashboard.showPlan(plan);dashboard.setContext(explanation);if(!sessionActive)queueHistory.setQueue(sessionQueue,-1);notifications.show(plan.choices().isEmpty()?"No eligible music. Check availability and taste exclusions.":"Temporary journey ready · "+plan.choices().size()+" recordings");}catch(Exception error){notifications.show("Could not build this journey. Retry after analysis finishes.");}}
+                protected void done(){if(servicesClosed||isCancelled()||generation!=sessionBuildGeneration)return;try{var plan=get();draftPreview=sessionActive;if(!sessionActive){sessionQueue=plan.choices();pendingLibraryQueue=!sessionQueue.isEmpty();sessionIndex=-1;if(shuffleEnabled)prepareShuffle(true);updatePlaybackQueue();}dashboard.showPlan(plan);dashboard.setContext(explanation);notifications.show(plan.choices().isEmpty()?"No eligible music. Check availability and taste exclusions.":"Temporary journey ready · "+plan.choices().size()+" recordings");}catch(Exception error){notifications.show("Could not build this journey. Retry after analysis finishes.");}}
             };sessionBuilder.execute();
         });
     }
@@ -495,10 +656,10 @@ public final class MainFrame extends JFrame {
     }
 
     private void loadPlaylist(Playlist playlist) {
-        Map<java.nio.file.Path, Track> available = new java.util.HashMap<>();
-        tracks.forEach(track -> available.put(track.path(), track));
-        List<SessionPlanner.Choice> choices = playlist.tracks().stream().map(available::get)
+        var catalog = library.catalog();
+        List<SessionPlanner.Choice> choices = playlist.tracks().stream().map(catalog::currentTrack)
             .filter(java.util.Objects::nonNull)
+            .filter(track -> !catalog.unavailable().contains(track.path()))
             .map(track -> new SessionPlanner.Choice(track, "Saved in " + playlist.name())).toList();
         if (choices.isEmpty()) { notifications.show("No tracks from this playlist are in the library"); return; }
         draftPreview = false;
@@ -509,7 +670,11 @@ public final class MainFrame extends JFrame {
         int seconds = choices.stream().mapToInt(choice -> choice.track().durationSeconds() > 0
             ? (int) Math.round(choice.track().durationSeconds()) : 180).sum();
         dashboard.showPlaylist(playlist, new SessionPlanner.Plan(choices, Math.max(1, seconds / 60), seconds));
-        queueHistory.setQueue(sessionQueue, -1);
+        if (shuffleEnabled) {
+            prepareShuffle(true);
+            anchorShuffleToPlayback();
+        }
+        updatePlaybackQueue();
         int missing = playlist.tracks().size() - choices.size();
         notifications.show("Loaded " + playlist.name() + (missing == 0 ? "" : " · " + missing + " unavailable tracks"));
     }
@@ -547,6 +712,7 @@ public final class MainFrame extends JFrame {
                     if (update.revision() > shownCollectionRevision) {
                         shownCollectionRevision = update.revision();
                         libraryPanel.setCollections(update.data());
+                        updateRediscoverTaste();
                         dashboard.setPlaylists(update.data().playlists());
                         queueHistory.setRecent(update.recent());
                         updateLiked(selectedTrack);
@@ -581,6 +747,7 @@ public final class MainFrame extends JFrame {
         collectionPage.showEntry(entry, library.catalog());
         libraryPanel.collapse();
         screenLayout.show(screens, "collection");
+        navigation.setActivePage("collection");
     }
 
     private void refreshCollectionPage() {
@@ -598,6 +765,7 @@ public final class MainFrame extends JFrame {
         if (!workspaceReady) return;
         openArtist = name; openCollection = null; libraryPanel.collapse();
         refreshArtist(); screenLayout.show(screens, "artist");
+        navigation.setActivePage("artist");
     }
     private void refreshArtist() {
         String name = openArtist; long generation = ++artistRefresh;
@@ -606,7 +774,11 @@ public final class MainFrame extends JFrame {
         memory.afterPending(() -> { if (!servicesClosed && generation == artistRefresh && java.util.Objects.equals(name, openArtist)) artistPage.showArtist(name, library.catalog(), libraryPanel.collections()); });
     }
     private void updateLiked(Track track) {
-        playerBar.setLiked(track != null && libraryPanel != null && libraryPanel.collections().pins().contains(new Key(sangitam.desktop.model.LibraryCollections.Kind.SONG, track.path().toString())));
+        playerBar.setLiked(track != null && libraryPanel != null && libraryPanel.collections().likes().contains(track.path()));
+    }
+
+    private void updateRediscoverTaste() {
+        if (rediscover != null) rediscover.setTaste(tasteRatings, libraryPanel.collections().likes());
     }
     private void toggleQueueHistory() {
         if (!workspaceReady) return;
@@ -648,14 +820,63 @@ public final class MainFrame extends JFrame {
         }.execute();
     }
 
+    private void reanalyzeTrack(Track selected) {
+        var catalog = library.catalog();
+        Track track = catalog.byPath().getOrDefault(selected.path(), selected);
+        var options = new JPanel(new GridLayout(0, 1, 0, 6));
+        var sampling = new JComboBox<>(AudioAnalyzer.Sampling.values());
+        var samplingLabel = new JLabel("Audio to sample");
+        samplingLabel.setLabelFor(sampling);
+        options.add(samplingLabel);
+        options.add(sampling);
+        String originalKey = MusicalKey.display(track.metadata().text(TrackMetadata.Field.KEY));
+        var key = new JTextField(originalKey, 26);
+        var keyLabel = new JLabel("Musical key (optional)");
+        keyLabel.setLabelFor(key);
+        options.add(keyLabel);
+        options.add(key);
+        var moodTags = new JCheckBox("Suggest mood tags from the audio", true);
+        options.add(moodTags);
+        if (JOptionPane.showConfirmDialog(this, options, "Re-analyse " + track.title(),
+            JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE) != JOptionPane.OK_OPTION) return;
+        String editedKey = key.getText().strip();
+        var reviewedMetadata = track.metadata().edit(Map.of(TrackMetadata.Field.KEY, editedKey), null);
+        library.analyzeTrack(track, (AudioAnalyzer.Sampling) sampling.getSelectedItem(), moodTags.isSelected(),
+            editedKey.equals(originalKey) ? null : editedKey,
+            measured -> reviewMoodTags(measured, reviewedMetadata), notifications::show);
+    }
+
+    private List<String> reviewMoodTags(TrackTags measured, TrackMetadata metadata) {
+        var choices = new JPanel(new GridLayout(0, 2, 8, 4));
+        var tags = MoodTags.CHOICES.stream()
+            .map(tag -> new JCheckBox(tag, measured.features().moodTags().contains(tag))).toList();
+        tags.forEach(choices::add);
+        var review = new JPanel(new BorderLayout(0, 8));
+        var result = new JPanel(new GridLayout(0, 1, 0, 4));
+        result.add(new JLabel(measured.features().summary(metadata)));
+        result.add(new JLabel("Choose mood tags to save with this analysis."));
+        review.add(result, BorderLayout.NORTH);
+        review.add(choices, BorderLayout.CENTER);
+        if (JOptionPane.showConfirmDialog(this, review, "Review mood tags",
+            JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE) != JOptionPane.OK_OPTION) return null;
+        return tags.stream().filter(JCheckBox::isSelected).map(JCheckBox::getText).toList();
+    }
+
     private void editTrackDetails(List<Track> tracks, boolean group) {
         if (tracks.isEmpty()) return;
-        TrackDetailsPanel editor = new TrackDetailsPanel(tracks, group, library.catalog().tagsFor(tracks.getFirst()));
+        Track first = tracks.getFirst();
+        var catalog = library.catalog();
+        TrackDetailsPanel editor = new TrackDetailsPanel(tracks, group, catalog.tagsFor(first),
+            catalog.unavailable().contains(first.path()));
         while (JOptionPane.showConfirmDialog(this, editor, group ? "Edit collection details" : "Edit track details",
             JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE) == JOptionPane.OK_OPTION) {
             try {
                 LibraryStore.DetailChanges changes = editor.changes();
-                library.editDetails(tracks.stream().map(Track::path).toList(), changes, notifications::show);
+                library.editDetails(tracks.stream().map(Track::path).toList(), changes, message -> {
+                    notifications.show(message);
+                    if (message.startsWith("Track details saved") && library.catalog().locations().settings() != null)
+                        library.identifyInBackground(automaticIdentification, false, notifications::show);
+                });
                 return;
             } catch (IllegalArgumentException error) {
                 JOptionPane.showMessageDialog(this, error.getMessage(), "Check details", JOptionPane.ERROR_MESSAGE);
@@ -681,12 +902,17 @@ public final class MainFrame extends JFrame {
 
     private void playCollection(List<Track> tracks, int startIndex) {
         if (tracks.isEmpty()) return;
-        Track requested = tracks.get(startIndex);
-        List<SessionPlanner.Choice> choices = playableChoices(tracks);
+        Set<Path> unavailable = library.catalog().unavailable();
+        var choices = new ArrayList<SessionPlanner.Choice>();
+        int start = 0;
+        for (int index = 0; index < tracks.size(); index++) {
+            Track track = tracks.get(index);
+            if (unavailable.contains(track.path())) continue;
+            if (index == startIndex) start = choices.size();
+            choices.add(new SessionPlanner.Choice(track, "From your library"));
+        }
         if (choices.isEmpty()) { notifications.show("No available tracks in this collection"); return; }
-        SessionPlanner.Choice start = choices.stream().filter(choice -> choice.track().path().equals(requested.path()))
-            .findFirst().orElse(choices.getFirst());
-        startSessionAt(start, choices);
+        startSession(choices, start);
         showQueue();
     }
 
@@ -699,6 +925,7 @@ public final class MainFrame extends JFrame {
     private void addToQueue(List<Track> tracks) {
         var updated = new java.util.ArrayList<SessionPlanner.Choice>();
         boolean anchoredToPlayback = false;
+        boolean existingQueue = usesSessionShuffle();
         if (sessionActive || pendingLibraryQueue) updated.addAll(sessionQueue);
         else {
             PlaybackState state = player == null ? PlaybackState.idle() : player.state();
@@ -722,64 +949,69 @@ public final class MainFrame extends JFrame {
         if (anchoredToPlayback) {
             sessionActive = true;
             sessionIndex = 0;
-            sessionPlayed.clear();
-            sessionPlayed.add(0);
         }
         updated.addAll(added);
         sessionQueue = List.copyOf(updated);
         pendingLibraryQueue = !sessionActive;
+        if (shuffleEnabled) {
+            prepareShuffle(!existingQueue);
+            if (anchoredToPlayback) anchorShuffleToPlayback();
+        }
         showQueue();
         notifications.show("Added " + added.size() + " to the queue");
     }
 
     private void showQueue() {
         if (!draftPreview) dashboard.setQueue(sessionQueue);
-        if (queueHistory != null) queueHistory.setQueue(sessionQueue, sessionActive ? sessionIndex : -1);
+        updatePlaybackQueue();
     }
 
     private void startSession(List<SessionPlanner.Choice> choices) {
+        startSession(choices, 0);
+    }
+
+    private void startSession(List<SessionPlanner.Choice> choices, int index) {
         draftPreview=false;
         if (choices.isEmpty()) { notifications.show("Build or add a track first"); return; }
         sessionQueue = List.copyOf(choices);
         pendingLibraryQueue = false;
-        sessionPlayed.clear();
         sessionActive = true;
-        playSessionIndex(0);
+        if (shuffleEnabled) prepareShuffle(true);
+        playSessionIndex(index);
     }
 
     private void startSessionAt(SessionPlanner.Choice choice, List<SessionPlanner.Choice> choices) {
-        draftPreview=false;
-        sessionQueue = List.copyOf(choices);
-        pendingLibraryQueue = false;
-        sessionPlayed.clear();
-        sessionActive = true;
-        int index = sessionQueue.indexOf(choice);
-        playSessionIndex(Math.max(0, index));
+        startSession(choices, Math.max(0, choices.indexOf(choice)));
     }
 
     private void editSession(List<SessionPlanner.Choice> choices) {
         int previousIndex = sessionIndex;
         sessionQueue = List.copyOf(choices);
-        if (queueHistory != null) queueHistory.setQueue(sessionQueue, sessionActive ? sessionIndex : -1);
+        boolean existingQueue = usesSessionShuffle();
         if (sessionQueue.isEmpty()) pendingLibraryQueue = false;
-        if (!sessionActive || selectedTrack == null) return;
-        sessionIndex = indexOfChoices(selectedTrack);
-        if (sessionIndex < 0) {
-            if (sessionQueue.isEmpty()) sessionActive = false;
-            else sessionIndex = Math.min(previousIndex - 1, sessionQueue.size() - 1);
+        if (sessionActive && selectedTrack != null) {
+            sessionIndex = indexOfChoices(selectedTrack);
+            if (sessionIndex < 0) {
+                if (sessionQueue.isEmpty()) sessionActive = false;
+                else sessionIndex = Math.min(previousIndex - 1, sessionQueue.size() - 1);
+            }
         }
+        if (shuffleEnabled) {
+            boolean changedSource = existingQueue != usesSessionShuffle();
+            prepareShuffle(changedSource);
+            if (changedSource) anchorShuffleToPlayback();
+            if (sessionActive && shuffle.current() != null)
+                sessionIndex = shuffleIndices.getOrDefault(shuffle.current(), sessionIndex);
+        }
+        updatePlaybackQueue();
     }
 
     private void playSessionIndex(int index) {
         if (index < 0 || index >= sessionQueue.size()) return;
         sessionIndex = index;
-        if (queueHistory != null) queueHistory.setQueue(sessionQueue, sessionIndex);
-        sessionPlayed.add(index);
-        selectedTrack = sessionQueue.get(index).track();
-        userSelectedTrack = true;
-        playGeneration++;
-        savePosition(selectedTrack, 0);
-        ensurePlayer().play(selectedTrack);
+        if (shuffleEnabled) shuffle.select(sessionShuffleEntries.get(index));
+        updatePlaybackQueue();
+        startTrackPlayback(sessionQueue.get(index).track());
         notifications.show("Session " + (index + 1) + " of " + sessionQueue.size() + " · "
             + selectedTrack.title());
     }
@@ -808,7 +1040,7 @@ public final class MainFrame extends JFrame {
 
     private void togglePlayback() {
         PlaybackState state = player == null ? PlaybackState.idle() : player.state();
-        if (pendingLibraryQueue) { startSession(sessionQueue); return; }
+        if (pendingLibraryQueue) { nextTrack(); return; }
         if (state.status() == PlaybackState.Status.LOADING) return;
         if (state.status() == PlaybackState.Status.PLAYING) {
             player.pause();
@@ -822,6 +1054,10 @@ public final class MainFrame extends JFrame {
             if (remembered != null && selectedTrack.path().equals(remembered.path()) && !userSelectedTrack) {
                 userSelectedTrack = true;
                 playGeneration++;
+                if (shuffleEnabled) {
+                    shuffle.select(new ShuffleEntry(selectedTrack, 0));
+                    updatePlaybackQueue();
+                }
                 ensurePlayer().play(selectedTrack, lastSavedPosition);
             } else playTrack(selectedTrack);
         } else {
@@ -830,44 +1066,31 @@ public final class MainFrame extends JFrame {
     }
 
     private void nextTrack() {
+        if (shuffleEnabled) {
+            ShuffleEntry next = shuffle.next();
+            if (next != null) playShuffled(next);
+            else notifications.show(sessionActive ? "Session complete" : "No next available track in the shuffle");
+            return;
+        }
         if (pendingLibraryQueue) { startSession(sessionQueue); return; }
         if (sessionActive) {
-            if (shuffleEnabled) {
-                List<Integer> candidates = new java.util.ArrayList<>();
-                for (int i = 0; i < sessionQueue.size(); i++) if (!sessionPlayed.contains(i)) candidates.add(i);
-                if (candidates.isEmpty() && repeatCurrent) {
-                    sessionPlayed.clear();
-                    for (int i = 0; i < sessionQueue.size(); i++) if (i != sessionIndex) candidates.add(i);
-                }
-                if (candidates.isEmpty()) {
-                    sessionActive = false;
-                    notifications.show("Session complete");
-                    return;
-                }
-                playSessionIndex(candidates.get(ThreadLocalRandom.current().nextInt(candidates.size())));
-                return;
-            }
             if (sessionIndex + 1 < sessionQueue.size()) playSessionIndex(sessionIndex + 1);
             else notifications.show("Last track in session");
             return;
         }
         if (tracks.isEmpty()) { notifications.show("Add music to your library first"); return; }
-        if (shuffleEnabled && tracks.size() > 1) {
-            Set<Path> unavailable = library.catalog().unavailable();
-            List<Track> candidates = tracks.stream()
-                .filter(track -> selectedTrack == null || !track.path().equals(selectedTrack.path()))
-                .filter(track -> !unavailable.contains(track.path())).toList();
-            if (!candidates.isEmpty()) {
-                playTrack(candidates.get(ThreadLocalRandom.current().nextInt(candidates.size())));
-                return;
-            }
-        }
         Track next = adjacentAvailable(selectedTrack, 1);
         if (next != null) playTrack(next);
         else notifications.show("No next available track");
     }
 
     private void previousTrack() {
+        if (shuffleEnabled) {
+            ShuffleEntry previous = shuffle.previous();
+            if (previous != null) playShuffled(previous);
+            else if (player != null) player.seek(0);
+            return;
+        }
         if (sessionActive) {
             if (sessionIndex > 0) playSessionIndex(sessionIndex - 1);
             else if (player != null) player.seek(0);
@@ -885,16 +1108,117 @@ public final class MainFrame extends JFrame {
     }
 
     private void setShuffle(boolean enabled) {
+        if (enabled != shuffleEnabled) {
+            if (enabled) {
+                prepareShuffle(true);
+                anchorShuffleToPlayback();
+            } else {
+                shuffle.reset(List.of());
+                sessionShuffleEntries = List.of();
+                shuffleIndices = Map.of();
+                shuffledCatalogPaths = Set.of();
+                shuffledUnavailable = Set.of();
+            }
+        }
         shuffleEnabled = enabled;
+        updatePlaybackQueue();
         playerBar.setShuffle(enabled);
+        if (sheetMusic != null) sheetMusic.updateModes(shuffleEnabled, repeatCurrent);
         windowsMedia.publish(player == null ? PlaybackState.idle() : player.state(), shuffleEnabled, repeatCurrent);
         if (menuBar != null) menuBar.setShuffleSelected(enabled);
         notifications.show(enabled ? "Shuffle enabled" : "Shuffle disabled");
     }
 
+    private boolean usesSessionShuffle() { return sessionActive || pendingLibraryQueue; }
+
+    private void prepareShuffle(boolean reset) {
+        LibraryService.Catalog catalog = library.catalog();
+        shuffledUnavailable = catalog.unavailable();
+        shuffledCatalogPaths = catalog.byPath().keySet();
+        List<ShuffleEntry> eligible = new ArrayList<>();
+        if (usesSessionShuffle()) {
+            Map<Path, Integer> occurrences = new HashMap<>();
+            Map<ShuffleEntry, Integer> indices = new HashMap<>();
+            List<ShuffleEntry> entries = new ArrayList<>();
+            for (SessionPlanner.Choice choice : sessionQueue) {
+                Track track = choice.track();
+                var entry = new ShuffleEntry(track, occurrences.merge(track.path(), 1, Integer::sum) - 1);
+                indices.put(entry, entries.size());
+                entries.add(entry);
+                if (!shuffledUnavailable.contains(track.path()) && catalog.byPath().containsKey(track.path())) eligible.add(entry);
+            }
+            sessionShuffleEntries = entries;
+            shuffleIndices = indices;
+        } else {
+            sessionShuffleEntries = List.of();
+            shuffleIndices = Map.of();
+            for (Track track : tracks) {
+                if (!shuffledUnavailable.contains(track.path())) eligible.add(new ShuffleEntry(track, 0));
+            }
+        }
+        if (reset) shuffle.reset(eligible);
+        else shuffle.reconcile(eligible);
+    }
+
+    private void anchorShuffleToPlayback() {
+        if (pendingLibraryQueue || selectedTrack == null || player == null) return;
+        PlaybackState state = player.state();
+        if (state.track() == null || !state.track().path().equals(selectedTrack.path())
+            || state.status() == PlaybackState.Status.ERROR) return;
+        ShuffleEntry entry = sessionActive && sessionIndex >= 0 && sessionIndex < sessionShuffleEntries.size()
+            && sessionShuffleEntries.get(sessionIndex).track().path().equals(selectedTrack.path())
+            ? sessionShuffleEntries.get(sessionIndex) : new ShuffleEntry(selectedTrack, 0);
+        shuffle.select(entry);
+        if (state.status() != PlaybackState.Status.LOADING) shuffle.started();
+    }
+
+    private void updatePlaybackQueue() {
+        if (queueHistory == null) return;
+        if (shuffleEnabled) {
+            List<ShuffleEntry> order = shuffle.visible();
+            queueHistory.setShuffledQueue(new java.util.AbstractList<>() {
+                @Override public Track get(int index) { return trackFor(order.get(index)); }
+                @Override public int size() { return order.size(); }
+            }, shuffle.current() != null);
+        } else queueHistory.setQueue(sessionQueue, sessionActive ? sessionIndex : -1);
+    }
+
+    private Track trackFor(ShuffleEntry entry) {
+        return library.catalog().byPath().getOrDefault(entry.track().path(), entry.track());
+    }
+
+    private void playQueueRow(int index) {
+        if (shuffleEnabled) {
+            if (index >= 0 && index < shuffle.visible().size()) playShuffled(shuffle.chooseVisible(index));
+        } else if (index >= 0 && index < sessionQueue.size()) {
+            sessionActive = true;
+            pendingLibraryQueue = false;
+            playSessionIndex(index);
+        }
+    }
+
+    private void playShuffled(ShuffleEntry entry) {
+        if (usesSessionShuffle()) {
+            sessionActive = true;
+            pendingLibraryQueue = false;
+            sessionIndex = shuffleIndices.getOrDefault(entry, -1);
+        }
+        updatePlaybackQueue();
+        startTrackPlayback(trackFor(entry));
+    }
+
+    private record ShuffleEntry(Track track, int occurrence) {
+        @Override public boolean equals(Object other) {
+            return other instanceof ShuffleEntry entry && occurrence == entry.occurrence
+                && track.path().equals(entry.track.path());
+        }
+        @Override public int hashCode() { return 31 * track.path().hashCode() + occurrence; }
+    }
+
     private void setRepeat(boolean enabled) {
         repeatCurrent = enabled;
         playerBar.setRepeat(enabled);
+        if (sheetMusic != null) sheetMusic.updateModes(shuffleEnabled, repeatCurrent);
         windowsMedia.publish(player == null ? PlaybackState.idle() : player.state(), shuffleEnabled, repeatCurrent);
         if (menuBar != null) menuBar.setRepeatSelected(enabled);
         notifications.show(enabled ? "Repeat current track enabled" : "Repeat disabled");
@@ -921,9 +1245,12 @@ public final class MainFrame extends JFrame {
             rediscover = new RediscoverPanel(history, store, this::playTrack, notifications::show);
             screens.add(rediscover, "rediscover");
             rediscover.setCatalog(library.catalog());
+            updateRediscoverTaste();
         }
         boolean collectionCategory = name.equals("songs") || name.equals("albums") || name.equals("artists");
-        screenLayout.show(screens, collectionCategory ? "search" : name.equals("playlists") ? "home" : name);
+        String page = collectionCategory ? "search" : name.equals("playlists") ? "home" : name;
+        screenLayout.show(screens, page);
+        navigation.setActivePage(page);
         if (collectionCategory) search.selectCategory(name);
         if (name.equals("playlists")) SwingUtilities.invokeLater(dashboard::focusPlaylists);
         if (name.equals("discover")) discover.focusSearch();
@@ -969,12 +1296,32 @@ public final class MainFrame extends JFrame {
 
     private void openAudioSettings() {
         if (!audioSettingsReady) { notifications.show("Audio settings are loading…"); return; }
-        if (libraryPanel != null) libraryPanel.collapse();
-        new AudioSettingsDialog(this, audioSettings, ensurePlayer(), audioSettingsStore, next -> {
+        if (audioSettingsDialog != null && audioSettingsDialog.isDisplayable()) {
+            audioSettingsDialog.toFront();
+            audioSettingsDialog.requestFocus();
+            return;
+        }
+        audioSettingsDialog = new AudioSettingsDialog(this, audioSettings, ensurePlayer(), audioSettingsStore, next -> {
             audioSettings = next;
             playerBar.setAudioSettings(next);
             notifications.show("Audio settings saved");
-        }).setVisible(true);
+        });
+        audioSettingsDialog.addWindowListener(new WindowAdapter() {
+            @Override public void windowClosed(WindowEvent event) {
+                if (exitAfterAudioSettings) {
+                    exitAfterAudioSettings = false;
+                    closeApp();
+                }
+            }
+        });
+        audioSettingsDialog.setVisible(true);
+    }
+
+    private void openUserGuide() {
+        if (userGuide == null || !userGuide.isDisplayable()) userGuide = new UserGuideDialog(this, this::openShortcuts);
+        userGuide.setVisible(true);
+        userGuide.toFront();
+        userGuide.requestFocus();
     }
 
     private void installKeyboardShortcuts() {
@@ -989,9 +1336,40 @@ public final class MainFrame extends JFrame {
     }
 
     private void toggleSpectrum() {
-        spectrumVisible = !spectrumVisible; spectrumPanel.setVisible(spectrumVisible);
-        PlayerService decoder = ensurePlayer(); decoder.setSpectrumListener(spectrumVisible ? spectrumPanel::setSamples : null);
-        spectrumPanel.setStatus(decoder.supportsSpectrum(), decoder.state().status() == PlaybackState.Status.PLAYING); spectrumPanel.getParent().revalidate();
+        setSpectrumVisible(!spectrumVisible);
+    }
+
+    private void setSpectrumVisible(boolean visible) {
+        if (spectrumVisible == visible) return;
+        spectrumVisible = visible;
+        spectrumMenu.setEnabled(visible);
+        spectrumPanel.setVisible(visible);
+        playerBar.setSpectrumVisible(visible);
+        refreshSpectrumListener();
+        spectrumPanel.getParent().revalidate();
+        spectrumPanel.getParent().repaint();
+    }
+
+    private void applySpectrumPreferences(SpectrumPreferences preferences) {
+        spectrumPanel.setPreferences(preferences);
+        spectrumMenu.setPreferences(preferences);
+        spectrumMenu.setAppearanceReady(true);
+    }
+
+    private void refreshSpectrumListener() {
+        boolean show = spectrumVisible && playerBar.getParent().isVisible();
+        spectrumPanel.setSamples(new float[0]);
+        if (show) ensurePlayer().setSpectrumListener(spectrumPanel::setSamples);
+        else if (player != null) player.setSpectrumListener(null);
+        updateSpectrumStatus(player == null ? PlaybackState.idle() : player.state());
+    }
+
+    private void updateSpectrumStatus(PlaybackState state) {
+        if (!spectrumVisible) return;
+        boolean nativePlayback = player != null && player.audioStatus().backend()
+            == sangitam.desktop.playback.AudioStatus.Backend.VLC;
+        spectrumPanel.setStatus(player != null && player.supportsSpectrum(),
+            state.status() == PlaybackState.Status.PLAYING, nativePlayback);
     }
     private void applyShortcuts(ShortcutBindings next) {
         InputMap map = getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
@@ -1078,6 +1456,14 @@ public final class MainFrame extends JFrame {
     }
 
     private void closeApp() {
+        if (audioSettingsDialog != null && audioSettingsDialog.isDisplayable()) {
+            if (audioSettingsDialog.isSaving()) {
+                exitAfterAudioSettings = true;
+                audioSettingsDialog.toFront();
+                return;
+            }
+            audioSettingsDialog.dispose();
+        }
         closeServices();
         dispose();
     }
@@ -1090,6 +1476,52 @@ public final class MainFrame extends JFrame {
             player.setAudioSettings(audioSettings);
         }
         return player;
+    }
+
+    private void openSheetMusic(Track track, boolean download) {
+        sheetMusicTrack = track.path();
+        var playing = player == null ? null : player.state().track();
+        observedScorePlayback = playing == null ? null : playing.path();
+        if (sheetMusic != null) {
+            sheetMusic.showTrack(track, download);
+            if (player != null) sheetMusic.updatePlayback(scorePlayback(player.state()));
+            sheetMusic.toFront();
+            return;
+        }
+        var dialog = new SheetMusicDialog(this, track, new SheetMusicStore(store), new ManagedScoreStore(store), scoreProvider, download, seconds -> {
+            if (player == null) return;
+            PlaybackState state = scorePlayback(player.state());
+            if (state.seekable() && state.durationSeconds() > 0 && Double.isFinite(seconds))
+                player.seek(Math.clamp(seconds / state.durationSeconds(), 0, 1));
+        }, new SheetMusicDialog.Transport(() -> {
+            PlaybackState state = player == null ? PlaybackState.idle() : scorePlayback(player.state());
+            if (state.track() == null || state.status() == PlaybackState.Status.STOPPED
+                || state.status() == PlaybackState.Status.ENDED || state.status() == PlaybackState.Status.ERROR)
+                playTrack(sheetMusic.track());
+            else togglePlayback();
+        }, this::previousTrack, this::nextTrack, () -> setShuffle(!shuffleEnabled), () -> setRepeat(!repeatCurrent)));
+        sheetMusic = dialog;
+        dialog.updateModes(shuffleEnabled, repeatCurrent);
+        dialog.addWindowListener(new WindowAdapter() {
+            @Override public void windowClosed(WindowEvent event) {
+                if (sheetMusic == dialog) {
+                    sheetMusic = null;
+                    sheetMusicTrack = null;
+                }
+            }
+        });
+        if (player != null) dialog.updatePlayback(scorePlayback(player.state()));
+        dialog.setVisible(true);
+    }
+
+    private PlaybackState scorePlayback(PlaybackState state) {
+        if (state.track() == null || sheetMusicTrack == null) return PlaybackState.idle();
+        Path playing = state.track().path();
+        if (playing.equals(sheetMusicTrack)) return state;
+        var catalog = library.catalog();
+        Track score = catalog.currentTrack(sheetMusicTrack);
+        Track current = catalog.currentTrack(playing);
+        return score != null && current != null && score.path().equals(current.path()) ? state : PlaybackState.idle();
     }
 
     private void seekTo(double fraction) {
@@ -1107,6 +1539,8 @@ public final class MainFrame extends JFrame {
     }
 
     private void savePosition(Track track, double position) {
+        Track current = library.catalog().currentTrack(track.path());
+        if (current != null) track = current;
         lastSavedPosition = position;
         remembered = new PlaybackMemory(track.path(), position);
         memory.save(remembered);
@@ -1114,6 +1548,10 @@ public final class MainFrame extends JFrame {
 
     private void closeServices() {
         if (servicesClosed) return; servicesClosed = true;
+        if (sheetMusic != null) sheetMusic.dispose();
+        identificationRetry.stop();
+        managedRefresh.stop();
+        library.closeMetadataLookups();
         KeyboardFocusManager.getCurrentKeyboardFocusManager().removeKeyEventDispatcher(spaceTransport);
         startupTrace.close();
         if(sessionBuilder!=null)sessionBuilder.cancel(true); sessionBuildGeneration++;

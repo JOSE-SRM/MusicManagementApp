@@ -16,7 +16,7 @@ record ArtistPageData(List<Track> tracks, List<Track> popular, List<Track> liked
         List<Track> tracks = catalog.tracks().stream().filter(track -> ArtistCredits.features(track, name)).toList();
         var popular = tracks.stream().sorted(Comparator.<Track>comparingInt(catalog::playsFor).reversed()
             .thenComparing(Track::title, String.CASE_INSENSITIVE_ORDER).thenComparing(track -> track.path().toString())).limit(10).toList();
-        var liked = tracks.stream().filter(track -> organization.pins().contains(new Key(Kind.SONG, track.path().toString()))).toList();
+        var liked = tracks.stream().filter(track -> organization.likes().contains(track.path())).toList();
         Set<String> albumIds = new HashSet<>();
         for (Track track : tracks) if (hasAlbum(track)) albumIds.add(albumId(track));
         var albums = new TreeMap<String, List<Track>>();

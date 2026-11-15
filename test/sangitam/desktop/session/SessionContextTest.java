@@ -22,4 +22,21 @@ class SessionContextTest {
         var plan=new SessionPlanner().build(request,List.of(a,b),tags,Map.of(),context);assertEquals(List.of(b),plan.choices().stream().map(SessionPlanner.Choice::track).toList());
         assertTrue(new SessionPlanner().build(request,List.of(a),tags,Map.of(),context).choices().isEmpty());
     }
+
+    @Test void aLikeChangesSessionRankingAndFractionalPlayEvidenceBreaksEqualRatings() {
+        var a = new Track(Path.of("a.mp3"), "Same", "Same", "Album", 180, "MP3");
+        var b = new Track(Path.of("b.mp3"), "Same", "Same", "Album", 180, "MP3");
+        var request = new SessionPlanner.Request(SessionPlanner.Intent.FOCUS, 45, 3, false);
+        var planner = new SessionPlanner();
+        var now = ZonedDateTime.now();
+        var ratings = Map.of(a.path(), 1, b.path(), 1);
+        var neither = new SessionContext(now, ratings, List.of());
+        var liked = new SessionContext(now, ratings, List.of(), Set.of(b.path()));
+        assertEquals(a, planner.build(request, List.of(b, a), Map.of(), Map.of(), neither).choices().getFirst().track());
+        assertEquals(b, planner.build(request, List.of(a, b), Map.of(), Map.of(), liked).choices().getFirst().track());
+        var bothLiked = new SessionContext(now, ratings, List.of(), Set.of(a.path(), b.path()));
+        assertEquals(b, planner.build(request, List.of(a, b), Map.of(),
+            Map.of(a.path(), 20, b.path(), 21), bothLiked).choices().getFirst().track());
+        assertTrue(bothLiked.preference(b.path(), 21) > bothLiked.preference(a.path(), 20));
+    }
 }

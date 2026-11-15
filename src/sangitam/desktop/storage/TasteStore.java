@@ -36,12 +36,18 @@ public final class TasteStore {
     }
     public SessionContext context(ZonedDateTime now)throws SQLException{
         var feedback=new HashMap<Path,Integer>();var windows=new ArrayList<SessionContext.Listen>();
+        var likes = new HashSet<Path>();
         try(var c=library.connect();var s=c.createStatement()){
+            c.setAutoCommit(false);
             try(var r=s.executeQuery("SELECT path,rating FROM taste_feedback")){while(r.next())feedback.put(Path.of(r.getString(1)),r.getInt(2));}
+            try (var rows = s.executeQuery("SELECT path FROM song_likes")) {
+                while (rows.next()) likes.add(Path.of(rows.getString(1)));
+            }
             try(var q=c.prepareStatement("SELECT path,observed_at,seconds FROM listening_windows WHERE observed_at>=? AND observed_at<=? AND observed_at>=? UNION ALL SELECT path,MAX(observed_at),SUM(seconds) FROM listening_windows WHERE observed_at>=? AND observed_at<? GROUP BY path,strftime('%Y-%m-%d %H',observed_at/1000,'unixepoch') ORDER BY observed_at DESC LIMIT 12000")){
                 q.setLong(1,now.toInstant().toEpochMilli()-180L*86400000);q.setLong(2,now.toInstant().toEpochMilli());q.setLong(3,now.toInstant().toEpochMilli()-90*60000L);q.setLong(4,now.toInstant().toEpochMilli()-180L*86400000);q.setLong(5,now.toInstant().toEpochMilli()-90*60000L);try(var r=q.executeQuery()){while(r.next())windows.add(new SessionContext.Listen(Path.of(r.getString(1)),r.getLong(2),r.getDouble(3)));}
             }
+            c.commit();
         }
-        return new SessionContext(now,feedback,windows);
+        return new SessionContext(now,feedback,windows,likes);
     }
 }

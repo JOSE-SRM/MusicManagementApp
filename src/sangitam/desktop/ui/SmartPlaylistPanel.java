@@ -65,7 +65,7 @@ final class SmartPlaylistPanel extends JPanel implements AutoCloseable {
         JList<Track> list = new JList<>(examples); list.setFixedCellHeight(30);
         list.getAccessibleContext().setAccessibleName("Smart playlist preview");
         DefaultListCellRenderer renderer = new DefaultListCellRenderer(); renderer.putClientProperty("html.disable", true); list.setCellRenderer(renderer);
-        JScrollPane scroll = new JScrollPane(list); scroll.setPreferredSize(new Dimension(600, 120)); add(scroll, BorderLayout.CENTER);
+        JScrollPane scroll = new PixelScrollPane(list); scroll.setPreferredSize(new Dimension(600, 120)); add(scroll, BorderLayout.CENTER);
         JPanel bottom = new JPanel(new BorderLayout(10, 0)); bottom.setOpaque(false);
         status.getAccessibleContext().setAccessibleName("Smart playlist preview status");
         bottom.add(status, BorderLayout.CENTER); bottom.add(preview, BorderLayout.EAST); add(bottom, BorderLayout.SOUTH);

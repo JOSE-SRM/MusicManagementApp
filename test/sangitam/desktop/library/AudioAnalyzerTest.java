@@ -11,6 +11,7 @@ import javax.sound.sampled.AudioSystem;
 import java.io.ByteArrayInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -45,6 +46,65 @@ class AudioAnalyzerTest {
         assertTrue(rhythmic.activity() > analyzer.analyze(steady).activity());
         assertEquals("Charged", rhythmic.energyLabel());
         assertEquals("Busy movement", rhythmic.activityLabel());
+    }
+
+    @Test void measuresFlacAtDifferentBitDepthsAndReportsTruncation() throws Exception {
+        var analyzer = new AudioAnalyzer();
+        for (String name : new String[]{"tone-16-mono.flac", "tone-24-stereo.flac"}) {
+            Path file = folder.resolve(name);
+            try (var source = getClass().getResourceAsStream("/audio/" + name)) {
+                assertNotNull(source);
+                Files.copy(source, file);
+            }
+            TrackTags measured = analyzer.analyze(file);
+            assertTrue(measured.analyzed(), () -> name + " failed with " + measured.failure());
+            assertEquals(0.5, measured.features().sampledSeconds(), 0.01);
+            assertTrue(measured.features().rmsDb() > -30, "PCM should contain an audible tone");
+
+            byte[] original = Files.readAllBytes(file);
+            Files.write(file, Arrays.copyOf(original, original.length - 100));
+            TrackTags truncated = analyzer.analyze(file);
+            assertFalse(truncated.analyzed());
+            assertEquals(TrackTags.Failure.DAMAGED_FLAC, truncated.failure());
+        }
+    }
+
+    @Test void distinguishesUnrecognizedAudioFromAnUnavailableFile() throws Exception {
+        var analyzer = new AudioAnalyzer();
+        Path file = folder.resolve("unrecognized.bin");
+        assertEquals(TrackTags.Failure.UNAVAILABLE, analyzer.analyze(file).failure());
+        Files.writeString(file, "Plain text");
+        assertEquals(TrackTags.Failure.UNSUPPORTED_FORMAT, analyzer.analyze(file).failure());
+    }
+
+    @Test void longFlacSamplesTheEndingAndMeasuresOriginalChannelLevels() throws Exception {
+        Path file = folder.resolve("late-signal.flac");
+        try (var source = getClass().getResourceAsStream("/audio/late-signal.flac")) {
+            assertNotNull(source);
+            Files.copy(source, file);
+        }
+        var features = new AudioAnalyzer().analyze(file, 200).features();
+        assertEquals(5, features.passageCount());
+        assertEquals(180, features.sampledSeconds(), .01);
+        assertEquals(-12.04, features.peakDb(), .02);
+        assertEquals(-21.58, features.rmsDb(), .05);
+        assertTrue(features.key().isEmpty());
+    }
+
+    @Test void streamedPcmSamplesTheEndingBeyondTheOpeningBudget() throws Exception {
+        int rate = 8000;
+        AudioFormat format = new AudioFormat(rate, 16, 1, true, false);
+        byte[] samples = new byte[200 * rate * 2];
+        for (int offset = 180 * rate * 2; offset < samples.length; offset += 2) samples[offset + 1] = 32;
+        Path file = folder.resolve("late-signal.wav");
+        try (var pcm = new AudioInputStream(new ByteArrayInputStream(samples), format, samples.length / 2)) {
+            AudioSystem.write(pcm, AudioFileFormat.Type.WAVE, file.toFile());
+        }
+        var features = new AudioAnalyzer().analyze(file, 200).features();
+        assertEquals(5, features.passageCount());
+        assertEquals(180, features.sampledSeconds(), .01);
+        assertEquals(-12.04, features.peakDb(), .02);
+        assertEquals(-21.58, features.rmsDb(), .05);
     }
 
     @Test void laterRhythmicPassageIsNotHiddenByQuietIntro() throws Exception {

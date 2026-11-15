@@ -42,7 +42,7 @@ class LibraryScannerTest {
         assertEquals("Sangitam", track.artist());
         assertTrue(data.text(sangitam.desktop.model.TrackMetadata.Field.SOLOIST).isEmpty());
         assertTrue(data.bitrateKbps() > 0); assertTrue(data.sampleRateHz() > 0);
-        assertEquals(1, data.extractionVersion());
+        assertEquals(sangitam.desktop.model.TrackMetadata.CURRENT_VERSION, data.extractionVersion());
     }
 
     @Test void scansMp3AndWavRecursivelyAndSkipsBadFiles() throws Exception {

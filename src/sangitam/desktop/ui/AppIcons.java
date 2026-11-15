@@ -15,7 +15,7 @@ import java.awt.image.BufferedImage;
  * IMPORTANT: Icons are painted in Java, so they remain sharp and never depend on missing image files.
  */
 public final class AppIcons {
-    public enum Kind { HOME, SEARCH, MUSIC, FOLDER, PLAY, PAUSE, PREVIOUS, NEXT, PLUS, EXPAND, COLLAPSE, SETTINGS, HELP, SHUFFLE, REPEAT, STOP, QUEUE, VOLUME, EQ, HEART, PIN, SPECTRUM }
+    public enum Kind { HOME, SEARCH, GLOBE, HISTORY, MUSIC, FOLDER, PLAY, PAUSE, PREVIOUS, NEXT, PLUS, EXPAND, COLLAPSE, SETTINGS, HELP, SHUFFLE, REPEAT, STOP, QUEUE, VOLUME, EQ, HEART, PIN, SPECTRUM }
 
     private AppIcons() {
     }
@@ -74,6 +74,14 @@ public final class AppIcons {
                 case SEARCH:
                     g.drawOval(p, p, size - p * 2 - 2, size - p * 2 - 2);
                     g.drawLine(size - p - 3, size - p - 3, size - 2, size - 2); break;
+                case GLOBE:
+                    g.drawOval(p, p, size - p * 2, size - p * 2);
+                    g.drawOval(m - 2, p, 4, size - p * 2);
+                    g.drawLine(p, m, size - p, m); break;
+                case HISTORY:
+                    g.drawOval(p, p, size - p * 2, size - p * 2);
+                    g.drawLine(m, m - 3, m, m);
+                    g.drawLine(m, m, m + 3, m + 2); break;
                 case MUSIC:
                     g.drawLine(m, p, m, size - p); g.drawLine(m, p, size - p, p + 2);
                     g.fillOval(m - p, size - p - 3, p + 3, p + 3); g.fillOval(size - p - 2, m, p + 3, p + 3); break;

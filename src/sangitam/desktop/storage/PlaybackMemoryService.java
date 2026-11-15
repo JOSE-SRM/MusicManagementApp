@@ -1,6 +1,7 @@
 package sangitam.desktop.storage;
 
 import sangitam.desktop.model.PlaybackMemory;
+import sangitam.desktop.model.SpectrumPreferences;
 
 import javax.swing.SwingUtilities;
 import java.util.concurrent.ExecutorService;
@@ -46,6 +47,25 @@ public final class PlaybackMemoryService implements AutoCloseable {
     }
     public void saveVolume(double volume) {
         if (!closed) worker.execute(() -> { try { synchronized (store) { store.saveVolume(volume); } } catch (Exception ignored) { } });
+    }
+    public void loadSpectrumPreferences(Consumer<SpectrumPreferences> ready, Runnable failed) {
+        if (closed) return;
+        worker.execute(() -> {
+            try {
+                SpectrumPreferences value;
+                synchronized (store) { store.initialize(); value = store.loadSpectrumPreferences(); }
+                SwingUtilities.invokeLater(() -> { if (!closed) ready.accept(value); });
+            } catch (Exception error) {
+                SwingUtilities.invokeLater(() -> { if (!closed) failed.run(); });
+            }
+        });
+    }
+    public void saveSpectrumPreferences(SpectrumPreferences preferences, Runnable failed) {
+        if (closed) return;
+        worker.execute(() -> {
+            try { synchronized (store) { store.initialize(); store.saveSpectrumPreferences(preferences); } }
+            catch (Exception error) { SwingUtilities.invokeLater(() -> { if (!closed) failed.run(); }); }
+        });
     }
     public void saveListening(java.util.Map<java.nio.file.Path, Double> seconds) {
         if (closed || seconds.isEmpty()) return;

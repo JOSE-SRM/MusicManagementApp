@@ -105,7 +105,7 @@ public final class SearchPanel extends JPanel {
                 Hit hit = list.getSelectedValue();
                 if (hit != null) songMenu.apply(hit.track()).show(list, 20, Math.max(0, list.getCellBounds(list.getSelectedIndex(), list.getSelectedIndex()).y));
             });
-            tabs.addTab(switch (category) { case SONGS -> "Songs"; case ALBUMS -> "Albums"; case ARTISTS -> "Artists"; }, new JScrollPane(list));
+            tabs.addTab(switch (category) { case SONGS -> "Songs"; case ALBUMS -> "Albums"; case ARTISTS -> "Artists"; }, new PixelScrollPane(list));
         }
         tabs.addChangeListener(event -> runSearch(0));
         add(tabs, BorderLayout.CENTER);

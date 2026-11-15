@@ -27,6 +27,22 @@ final class MetadataStore {
         }
     }
     static TrackMetadata decode(String text) throws SQLException { return saved(text).metadata(); }
+    static TrackMetadata decode(String text, String enrichment) throws SQLException {
+        TrackMetadata base = decode(text);
+        if (enrichment == null || enrichment.equals("{}")) return base;
+        java.lang.reflect.Type type = new com.google.gson.reflect.TypeToken<Map<Field, TrackMetadata.Value>>() { }.getType();
+        Map<Field, TrackMetadata.Value> additions = JSON.fromJson(enrichment, type);
+        var fields = new EnumMap<Field, TrackMetadata.Value>(Field.class);
+        fields.putAll(base.fields());
+        additions.forEach((field, value) -> {
+            var current = fields.get(field);
+            if (current == null || value.origin() == TrackMetadata.Origin.SCORE_REFERENCE
+                && (current.origin() == TrackMetadata.Origin.TITLE_HINT || current.origin() == TrackMetadata.Origin.FOLDER_HINT))
+                fields.put(field, value);
+        });
+        return new TrackMetadata(fields, base.tags(), base.bitrateKbps(), base.sampleRateHz(), base.bitsPerSample(),
+            base.channels(), base.embeddedArtwork(), base.extractionVersion());
+    }
     private static Saved saved(String text) throws SQLException {
         if (text == null || text.isBlank()) return new Saved(TrackMetadata.empty(), Set.of(), false);
         try {
@@ -47,6 +63,46 @@ final class MetadataStore {
         previous.overrides().forEach(field -> overrides.put(field, previous.metadata().text(field)));
         TrackMetadata merged = track.metadata().edit(overrides, previous.tagsOverride() ? previous.metadata().tags() : null);
         save(connection, track.path(), new Saved(merged, previous.overrides(), previous.tagsOverride()));
+    }
+
+    static void mergeDuplicate(Connection connection, Path previous, Path target) throws SQLException {
+        Saved old = load(connection, previous);
+        Saved current = load(connection, target);
+        var fields = new EnumMap<Field, TrackMetadata.Value>(Field.class);
+        fields.putAll(current.metadata().fields());
+        old.metadata().fields().forEach((field, value) -> {
+            if (old.overrides().contains(field) && !current.overrides().contains(field)) fields.put(field, value);
+            else fields.putIfAbsent(field, value);
+        });
+        var overrides = new HashSet<>(current.overrides());
+        overrides.addAll(old.overrides());
+        var metadata = current.metadata().extractionVersion() == 0 ? old.metadata() : current.metadata();
+        var tags = current.tagsOverride() || !old.tagsOverride() ? current.metadata().tags() : old.metadata().tags();
+        if (tags.isEmpty() && !current.tagsOverride() && !old.tagsOverride()) tags = old.metadata().tags();
+        save(connection, target, new Saved(new TrackMetadata(fields, tags, metadata.bitrateKbps(), metadata.sampleRateHz(),
+            metadata.bitsPerSample(), metadata.channels(), metadata.embeddedArtwork(), metadata.extractionVersion()),
+            overrides, current.tagsOverride() || old.tagsOverride()));
+    }
+
+    static void updateFilingHints(Connection connection, Path path, Map<Field, TrackMetadata.Value> hints) throws SQLException {
+        Saved previous = load(connection, path);
+        var fields = new EnumMap<Field, TrackMetadata.Value>(Field.class);
+        fields.putAll(previous.metadata().fields());
+        hints.forEach((field, hint) -> {
+            var prior = fields.get(field);
+            boolean reference = hint.origin() == TrackMetadata.Origin.SCORE_REFERENCE;
+            boolean inferred = Set.of(Field.COMPOSER, Field.PERIOD, Field.FORM, Field.WORK, Field.MOVEMENT,
+                    Field.OPUS, Field.INSTRUMENTATION).contains(field)
+                && (hint.origin() == TrackMetadata.Origin.TITLE_HINT || hint.origin() == TrackMetadata.Origin.FOLDER_HINT)
+                && (prior == null || prior.origin() == TrackMetadata.Origin.TITLE_HINT || prior.origin() == TrackMetadata.Origin.FOLDER_HINT);
+            if (!previous.overrides().contains(field) && (inferred || reference && (prior == null
+                || prior.origin() == TrackMetadata.Origin.TITLE_HINT || prior.origin() == TrackMetadata.Origin.FOLDER_HINT)))
+                fields.put(field, hint);
+        });
+        var data = previous.metadata();
+        if (!fields.equals(data.fields())) save(connection, path, new Saved(new TrackMetadata(fields, data.tags(),
+            data.bitrateKbps(), data.sampleRateHz(), data.bitsPerSample(), data.channels(), data.embeddedArtwork(),
+            data.extractionVersion()), previous.overrides(), previous.tagsOverride()));
     }
     static void canonicalize(Connection connection, Path path, Map<String,String> aliases) throws SQLException {
         Saved previous=load(connection,path);var m=previous.metadata();

@@ -17,4 +17,8 @@ public final class AppPreferences {
     }
     public static String appleStorefront() { return PREFS.get("appleStorefront", "in"); }
     public static void setAppleStorefront(String storefront) { PREFS.put("appleStorefront", storefront); }
+    public static boolean backgroundIdentification() { return PREFS.getBoolean("backgroundIdentification", false); }
+    public static void setBackgroundIdentification(boolean enabled) { PREFS.putBoolean("backgroundIdentification", enabled); }
+    public static String scoreRecognitionExecutable() { return PREFS.get("scoreRecognitionExecutable", ""); }
+    public static void setScoreRecognitionExecutable(Path path) { PREFS.put("scoreRecognitionExecutable", path.toAbsolutePath().normalize().toString()); }
 }

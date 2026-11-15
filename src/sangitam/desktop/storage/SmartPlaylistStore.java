@@ -84,8 +84,8 @@ public final class SmartPlaylistStore {
             try (var query = connection.prepareStatement("SELECT t.*,m.payload" + filter.sql() + order(rule) + " LIMIT ?")) {
                 int next = bind(query, filter); query.setInt(next, Math.min(rule.limit(), 20));
                 try (var row = query.executeQuery()) {
-                    while (row.next()) examples.add(new Track(Path.of(row.getString("path")), row.getString("title"), row.getString("artist"),
-                        row.getString("album"), row.getDouble("duration_seconds"), row.getString("format"), row.getString("genre"), MetadataStore.decode(row.getString("payload"))));
+                    while (row.next()) examples.add(new Track(Path.of(row.getString("path")), row.getString("display_title"), row.getString("display_artist"),
+                        row.getString("display_album"), row.getDouble("duration_seconds"), row.getString("format"), row.getString("genre"), MetadataStore.decode(row.getString("payload"))));
                 }
             }
             connection.commit();
@@ -93,16 +93,26 @@ public final class SmartPlaylistStore {
         }
     }
     private static Filter filter(SmartPlaylistRule rule) {
-        StringBuilder sql = new StringBuilder(" FROM tracks t LEFT JOIN track_metadata m ON m.path=t.path WHERE 1=1");
+        StringBuilder sql = new StringBuilder(" FROM tracks_with_recording_matches t LEFT JOIN track_metadata m ON m.path=t.path WHERE 1=1");
         var values = new ArrayList<Object>();
         if (rule.availableOnly()) sql.append(" AND t.unavailable=0");
         if (!rule.text().isEmpty()) {
-            sql.append(" AND COALESCE(m.search_text,sangitam_fold(t.title || ' ' || t.artist || ' ' || t.album || ' ' || t.genre)) LIKE ? ESCAPE '\\'");
-            values.add("%" + rule.text().toLowerCase(Locale.ROOT).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%");
+            sql.append("""
+                 AND (COALESCE(m.search_text,sangitam_fold(t.title || ' ' || t.artist || ' ' || t.album || ' ' || t.genre)) LIKE ? ESCAPE '\\'
+                    OR (t.enriched AND sangitam_fold(t.display_title || ' ' || t.display_artist || ' ' || t.display_album) LIKE ? ESCAPE '\\'))
+                """);
+            String literal = "%" + rule.text().toLowerCase(Locale.ROOT).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
+            values.add(literal);
+            values.add(literal);
         }
         if (!rule.genre().isEmpty()) { sql.append(" AND sangitam_fold(t.genre)=?"); values.add(rule.genre().toLowerCase(Locale.ROOT)); }
         for (String tag : rule.tags()) {
-            sql.append(" AND EXISTS (SELECT 1 FROM json_each(m.payload,'$.metadata.tags') tag WHERE sangitam_fold(tag.value)=?)");
+            sql.append("""
+                 AND (EXISTS (SELECT 1 FROM json_each(m.payload,'$.metadata.tags') tag WHERE sangitam_fold(tag.value)=?)
+                      OR EXISTS (SELECT 1 FROM audio_features f, json_each(f.payload,'$.moodTags') tag
+                                 WHERE f.path=t.path AND sangitam_fold(tag.value)=?))
+                """);
+            values.add(tag.toLowerCase(Locale.ROOT));
             values.add(tag.toLowerCase(Locale.ROOT));
         }
         if (rule.energy() != null || rule.activity() != null)
@@ -116,7 +126,7 @@ public final class SmartPlaylistStore {
         int index = 1; for (Object value : filter.parameters()) query.setObject(index++, value); return index;
     }
     private static String order(SmartPlaylistRule rule) {
-        String tie = "t.title COLLATE NOCASE,t.artist COLLATE NOCASE,t.path";
+        String tie = "t.display_title COLLATE NOCASE,t.display_artist COLLATE NOCASE,t.path";
         return " ORDER BY " + switch (rule.order()) {
             case RECENT -> "MAX(t.added_at,t.last_played_at) DESC," + tie;
             case MOST_PLAYED -> "t.play_count DESC," + tie;

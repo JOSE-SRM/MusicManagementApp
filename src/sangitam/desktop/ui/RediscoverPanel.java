@@ -12,6 +12,7 @@ import sangitam.desktop.history.ListenBrainzHistorySource;
 import sangitam.desktop.history.SpotifyHistorySource;
 import sangitam.desktop.library.LibraryService;
 import sangitam.desktop.model.Track;
+import sangitam.desktop.model.TrackPreference;
 
 import javax.swing.*;
 import javax.swing.table.AbstractTableModel;
@@ -26,6 +27,10 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Comparator;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.prefs.Preferences;
 import java.util.function.Consumer;
 
@@ -54,6 +59,9 @@ public final class RediscoverPanel extends JPanel {
     private final JButton openButton = UiFactory.button("Open source", null, false);
     private List<Favorite> favorites = List.of();
     private List<Track> localTracks = List.of();
+    private Map<Path, Integer> playCounts = Map.of();
+    private Map<Path, Integer> taste = Map.of();
+    private Set<Path> likes = Set.of();
 
     public RediscoverPanel(HistoryService history, LibraryStore store, Consumer<Track> play, Consumer<String> notify) {
         super(new BorderLayout(0, 16));
@@ -84,8 +92,8 @@ public final class RediscoverPanel extends JPanel {
         header.add(connections);
         add(header, BorderLayout.NORTH);
 
-        tabs.addTab("Most played", new JScrollPane(mostTable));
-        tabs.addTab("Forgotten favorites", new JScrollPane(forgottenTable));
+        tabs.addTab("Most played", new PixelScrollPane(mostTable));
+        tabs.addTab("Forgotten favorites", new PixelScrollPane(forgottenTable));
         tabs.addTab("Listening insights", insights);
         mostTable.getSelectionModel().addListSelectionListener(event -> updateActions());
         forgottenTable.getSelectionModel().addListSelectionListener(event -> updateActions());
@@ -121,7 +129,15 @@ public final class RediscoverPanel extends JPanel {
     /** MainFrame calls this when local playback or imports change the library. */
     public void setCatalog(LibraryService.Catalog catalog) {
         localTracks = catalog.tracks();
+        playCounts = catalog.playCounts();
         history.updateCatalog(catalog);
+    }
+
+    void setTaste(Map<Path, Integer> ratings, Set<Path> likedPaths) {
+        if (taste.equals(ratings) && likes.equals(likedPaths)) return;
+        taste = ratings;
+        likes = likedPaths;
+        setFavorites(favorites);
     }
 
     void close() { insights.close(); }
@@ -214,13 +230,32 @@ public final class RediscoverPanel extends JPanel {
     }
 
     private void setFavorites(List<Favorite> updated) {
-        favorites = updated;
-        mostModel.setRows(updated);
-        List<Favorite> forgotten = FavoritesAnalyzer.forgotten(updated, System.currentTimeMillis());
+        var byPreference = Comparator.comparingDouble(this::preference).reversed();
+        var stableOrder = Comparator.comparing(Favorite::title, String.CASE_INSENSITIVE_ORDER)
+            .thenComparing(Favorite::artist, String.CASE_INSENSITIVE_ORDER)
+            .thenComparing(favorite -> Objects.toString(favorite.localPath(), ""));
+        favorites = updated.stream()
+            .sorted(Comparator.comparingInt(Favorite::knownPlays).reversed()
+                .thenComparing(byPreference).thenComparing(stableOrder)).toList();
+        mostModel.setRows(favorites);
+        List<Favorite> forgotten = FavoritesAnalyzer.forgotten(updated, System.currentTimeMillis()).stream()
+            .filter(favorite -> rating(favorite) != TrackPreference.AVOID)
+            .sorted(byPreference.thenComparingLong(Favorite::lastHeardMillis).thenComparing(stableOrder))
+            .toList();
         forgottenModel.setRows(forgotten);
         summary.setText(updated.isEmpty() ? "No listening history yet"
             : updated.size() + " songs with known plays · " + forgotten.size() + " ready to rediscover");
         updateActions();
+    }
+
+    private int rating(Favorite favorite) {
+        return favorite.localPath() == null ? 0 : taste.getOrDefault(favorite.localPath(), 0);
+    }
+
+    private double preference(Favorite favorite) {
+        Path path = favorite.localPath();
+        return path == null ? 0 : TrackPreference.score(
+            rating(favorite), likes.contains(path), playCounts.getOrDefault(path, 0));
     }
 
     private Favorite selected() {

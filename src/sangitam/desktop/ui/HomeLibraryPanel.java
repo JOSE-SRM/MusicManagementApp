@@ -45,7 +45,7 @@ final class HomeLibraryPanel extends JPanel {
             list.setBackground(Theme.BLACK); list.setCellRenderer(new CoverRenderer());
             list.getAccessibleContext().setAccessibleName(title);
             list.setToolTipText("Double-click or press Enter to open · right-click for actions");
-            JScrollPane scroll = new JScrollPane(list, ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER, ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+            JScrollPane scroll = new PixelScrollPane(list, ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER, ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
             scroll.setBorder(null); scroll.getViewport().setBackground(Theme.BLACK);
             body.setOpaque(false); body.add(scroll, "items");
             body.add(UiFactory.label(empty, Theme.SMALL, Theme.TEXT_MUTED), "empty");

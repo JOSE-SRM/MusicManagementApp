@@ -1,3 +1,4 @@
+param([string]$ScoreRecognitionDirectory)
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 $jdk = (Get-Command jpackage.exe -ErrorAction Stop).Source | Split-Path -Parent
@@ -35,9 +36,25 @@ if ($LASTEXITCODE) { Write-Warning 'Windows system media helper unavailable. The
     --dest $output --input $input --main-jar sangitam.jar --icon $icon `
     --add-modules 'java.desktop,java.sql,java.net.http,java.logging,java.management,java.naming,jdk.unsupported,jdk.crypto.ec,jdk.charsets,jdk.localedata,jdk.accessibility,jdk.zipfs,jdk.management' `
     --jlink-options '--strip-debug --no-header-files --no-man-pages --generate-cds-archive' `
-    --java-options '--enable-native-access=ALL-UNNAMED' | Out-Host
+    --java-options '--enable-native-access=ALL-UNNAMED -Xms64m -Xmx640m -XX:G1PeriodicGCInterval=30000' | Out-Host
 if ($LASTEXITCODE) { throw 'jpackage could not create the Windows application image.' }
 
 $app = Join-Path $output 'Sangitam/Sangitam.exe'
+if ($ScoreRecognitionDirectory) {
+    $engine = (Resolve-Path -LiteralPath $ScoreRecognitionDirectory).Path
+    if (-not (Test-Path -LiteralPath (Join-Path $engine 'Audiveris.exe') -PathType Leaf)) {
+        throw 'ScoreRecognitionDirectory must point to an Audiveris application folder.'
+    }
+    $tools = Join-Path $output 'Sangitam/tools'
+    New-Item -ItemType Directory -Path $tools | Out-Null
+    Copy-Item -LiteralPath $engine -Destination (Join-Path $tools 'Audiveris') -Recurse
+    $recognizerConfig = Join-Path $tools 'Audiveris/app/Audiveris.cfg'
+    if (Test-Path -LiteralPath $recognizerConfig) {
+        $configuration = [IO.File]::ReadAllText($recognizerConfig)
+        $configuration = $configuration -replace '(?m)^java-options=-Xms\S+\r?$', 'java-options=-Xms96m'
+        $configuration = $configuration -replace '(?m)^java-options=-Xmx\S+\r?$', "java-options=-Xmx1280m`r`njava-options=-XX:ActiveProcessorCount=4"
+        [IO.File]::WriteAllText($recognizerConfig, $configuration)
+    }
+}
 Write-Host "Open $app. Keep the entire Sangitam folder together."
 Write-Output $app

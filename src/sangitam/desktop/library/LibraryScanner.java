@@ -49,7 +49,7 @@ public final class LibraryScanner {
             || (!artistOverride && missingArtist(track.artist()) && !classicalComposer(track.path()).isEmpty());
     }
 
-    private static String fileTitle(String filename) {
+    static String fileTitle(String filename) {
         int dot = filename.lastIndexOf('.');
         return dot > 0 ? filename.substring(0, dot) : filename;
     }
@@ -60,6 +60,28 @@ public final class LibraryScanner {
 
     private static boolean missingArtist(String value) {
         return value.isBlank() || value.equalsIgnoreCase("unknown artist") || value.equalsIgnoreCase("unknown");
+    }
+
+    static Map<TrackMetadata.Field, TrackMetadata.Value> readDates(Path path) {
+        try {
+            var tag = org.jaudiotagger.audio.AudioFileIO.read(path.toFile()).getTag();
+            var dates = new java.util.EnumMap<TrackMetadata.Field, TrackMetadata.Value>(TrackMetadata.Field.class);
+            String recorded = field(tag, FieldKey.RECORDINGDATE, field(tag, FieldKey.RECORDINGSTARTDATE, ""));
+            String released = field(tag, FieldKey.ORIGINALRELEASEDATE, field(tag, FieldKey.ORIGINAL_YEAR, ""));
+            if (!recorded.isBlank()) dates.put(TrackMetadata.Field.RECORDING_DATE, new TrackMetadata.Value(recorded, TrackMetadata.Origin.EMBEDDED));
+            if (!released.isBlank()) dates.put(TrackMetadata.Field.RELEASE_DATE, new TrackMetadata.Value(released, TrackMetadata.Origin.EMBEDDED));
+            return dates;
+        } catch (Exception unreadable) { return Map.of(); }
+    }
+
+    private static String field(Tag tag, FieldKey key, String fallback) {
+        if (tag == null) return fallback;
+        try {
+            String value = tag.getFirst(key);
+            return value == null || value.isBlank() ? fallback : value.trim();
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
     }
 
     private static String classicalComposer(Path file) {
@@ -223,7 +245,9 @@ public final class LibraryScanner {
                 java.util.Map.entry(TrackMetadata.Field.OPUS, FieldKey.OPUS),
                 java.util.Map.entry(TrackMetadata.Field.PERIOD, FieldKey.PERIOD),
                 java.util.Map.entry(TrackMetadata.Field.FORM, FieldKey.WORK_TYPE),
-                java.util.Map.entry(TrackMetadata.Field.INSTRUMENTATION, FieldKey.INSTRUMENT));
+                java.util.Map.entry(TrackMetadata.Field.INSTRUMENTATION, FieldKey.INSTRUMENT),
+                java.util.Map.entry(TrackMetadata.Field.RECORDING_DATE, FieldKey.RECORDINGDATE),
+                java.util.Map.entry(TrackMetadata.Field.RELEASE_DATE, FieldKey.ORIGINALRELEASEDATE));
             keys.forEach((role, key) -> {
                 String value = field(tag, key, "");
                 if (!value.isBlank()) fields.put(role, new TrackMetadata.Value(value, TrackMetadata.Origin.EMBEDDED));
@@ -239,16 +263,6 @@ public final class LibraryScanner {
                 header == null ? 0 : header.getSampleRateAsNumber(), header == null ? 0 : header.getBitsPerSample(),
                 header == null ? "" : header.getChannels(), hasArtwork(tag), TrackMetadata.CURRENT_VERSION);
             return new Track(identity, title, artist, album, duration, extension.toUpperCase(Locale.ROOT), genre, metadata);
-        }
-
-        private String field(Tag tag, FieldKey key, String fallback) {
-            if (tag == null) return fallback;
-            try {
-                String value = tag.getFirst(key);
-                return value == null || value.isBlank() ? fallback : value.trim();
-            } catch (RuntimeException ignored) {
-                return fallback;
-            }
         }
 
         private boolean hasArtwork(Tag tag) {
