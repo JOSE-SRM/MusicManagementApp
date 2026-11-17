@@ -31,7 +31,10 @@ public final class UiFactory {
         Color hover = primary ? Theme.BLUE.brighter() : Theme.SURFACE_HOVER;
         button.addMouseListener(new MouseAdapter() {
             @Override public void mouseEntered(MouseEvent e) { button.setBackground(hover); }
-            @Override public void mouseExited(MouseEvent e) { button.setBackground(normal); }
+            @Override public void mouseExited(MouseEvent e) {
+                boolean selected = Boolean.TRUE.equals(button.getClientProperty("sangitam.selected"));
+                button.setBackground(selected ? Theme.SURFACE_HOVER : normal);
+            }
         });
         button.addFocusListener(new FocusAdapter() {
             @Override public void focusGained(FocusEvent event) { button.setBorder(focusBorder); }

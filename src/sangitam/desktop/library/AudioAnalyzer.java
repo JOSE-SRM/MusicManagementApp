@@ -102,11 +102,27 @@ public final class AudioAnalyzer {
         }
         double rms = Math.sqrt(squares / samples);
         double decibels = 20 * Math.log10(Math.max(rms, 0.000001));
-        int loudness = bounded((decibels + 40) * 100 / 32);
+        // Give quiet-but-audible recordings more usable resolution without calling them calm.
+        int loudness = bounded((decibels + 45) * 100 / 37);
         double sampledSeconds = samples / (format.getSampleRate() * channels);
-        int activity = bounded(onsets(rmsWindows, changeWindows) / Math.max(0.1, sampledSeconds) * 38);
-        int energy = bounded(loudness * 0.65 + activity * 0.35);
+        int onsetRate = bounded(onsets(rmsWindows, changeWindows) / Math.max(0.1, sampledSeconds) * 50);
+        int dynamics = dynamicRange(rmsWindows);
+        int activity = bounded(onsetRate * 0.7 + dynamics * 0.3);
+        int energy = bounded(loudness * 0.6 + activity * 0.4);
         return new TrackTags(energy, activity, true, size, modified);
+    }
+
+    /** Combines event density with loudness variation so steady mastering does not hide movement. */
+    private int dynamicRange(List<Double> windows) {
+        if (windows.size() < 2) return 0;
+        double mean = windows.stream().mapToDouble(Double::doubleValue).average().orElse(0);
+        if (mean <= 0.0001) return 0;
+        double variance = windows.stream().mapToDouble(value -> {
+            double delta = value - mean;
+            return delta * delta;
+        }).average().orElse(0);
+        double coefficientOfVariation = Math.sqrt(variance) / mean;
+        return bounded(coefficientOfVariation * 90);
     }
 
     private int onsets(List<Double> rms, List<Double> changes) {

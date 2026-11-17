@@ -4,6 +4,7 @@ import sangitam.desktop.model.Track;
 import sangitam.desktop.model.TrackTags;
 import sangitam.desktop.model.Playlist;
 import sangitam.desktop.model.PlaybackMemory;
+import sangitam.desktop.model.ListeningMoment;
 import sangitam.desktop.history.ListenEvent;
 
 import java.net.URI;
@@ -70,7 +71,8 @@ public final class LibraryStore {
                     playlist_id INTEGER NOT NULL,
                     position INTEGER NOT NULL,
                     path TEXT NOT NULL,
-                    PRIMARY KEY (playlist_id, position)
+                    PRIMARY KEY (playlist_id, position),
+                    FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
                 )
                 """);
             statement.executeUpdate("""
@@ -87,6 +89,61 @@ public final class LibraryStore {
                 )
                 """);
             statement.executeUpdate("CREATE INDEX IF NOT EXISTS listens_time ON listens(played_at_ms)");
+            statement.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS listening_moments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    room TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL
+                )
+                """);
+            statement.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS listening_moment_items (
+                    moment_id INTEGER NOT NULL,
+                    position INTEGER NOT NULL,
+                    path TEXT NOT NULL,
+                    PRIMARY KEY (moment_id, position),
+                    FOREIGN KEY (moment_id) REFERENCES listening_moments(id) ON DELETE CASCADE
+                )
+                """);
+            connection.setAutoCommit(false);
+            try {
+                ensureContainerForeignKey(connection, "playlist_items", "playlists", "playlist_id");
+                ensureContainerForeignKey(connection, "listening_moment_items", "listening_moments", "moment_id");
+                connection.commit();
+            } catch (SQLException migrationFailure) {
+                connection.rollback();
+                throw migrationFailure;
+            }
+        }
+    }
+
+    /** Adds cascading ownership for child rows while preserving existing ordered track paths. */
+    private void ensureContainerForeignKey(Connection connection, String child, String parent, String key)
+        throws SQLException {
+        boolean present = false;
+        try (Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery("PRAGMA foreign_key_list(" + child + ")")) {
+            while (rows.next()) {
+                if (parent.equalsIgnoreCase(rows.getString("table"))
+                    && key.equalsIgnoreCase(rows.getString("from"))) present = true;
+            }
+        }
+        if (present) return;
+
+        String temporary = child + "_migration";
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DROP TABLE IF EXISTS " + temporary);
+            statement.executeUpdate("CREATE TABLE " + temporary + " ("
+                + key + " INTEGER NOT NULL, position INTEGER NOT NULL, path TEXT NOT NULL, "
+                + "PRIMARY KEY (" + key + ", position), FOREIGN KEY (" + key + ") REFERENCES "
+                + parent + "(id) ON DELETE CASCADE)");
+            statement.executeUpdate("INSERT INTO " + temporary + " (" + key + ", position, path) "
+                + "SELECT child." + key + ", child.position, child.path FROM " + child + " child "
+                + "JOIN " + parent + " owner ON owner.id=child." + key);
+            statement.executeUpdate("DROP TABLE " + child);
+            statement.executeUpdate("ALTER TABLE " + temporary + " RENAME TO " + child);
         }
     }
 
@@ -112,7 +169,7 @@ public final class LibraryStore {
                 Track track = new Track(Path.of(rows.getString(1)), rows.getString(2), rows.getString(3),
                     rows.getString(4), rows.getDouble(5), rows.getString(6), rows.getString(7));
                 boolean manual = rows.getInt(14) == 1;
-                boolean oldAnalysis = !manual && rows.getInt(15) < 2;
+                boolean oldAnalysis = !manual && rows.getInt(15) < TrackTags.ANALYSIS_VERSION;
                 TrackTags tags = oldAnalysis ? TrackTags.pending()
                     : new TrackTags(rows.getInt(8), rows.getInt(9), rows.getInt(10) == 1,
                         rows.getLong(11), rows.getLong(12));
@@ -154,14 +211,15 @@ public final class LibraryStore {
 
     public void saveTags(Path path, TrackTags tags) throws SQLException {
         try (Connection connection = connect(); PreparedStatement update = connection.prepareStatement(
-            "UPDATE tracks SET energy=?, activity=?, analyzed=?, file_size=?, file_modified=?, analysis_version=2 " +
+            "UPDATE tracks SET energy=?, activity=?, analyzed=?, file_size=?, file_modified=?, analysis_version=? " +
             "WHERE path=? AND tags_override=0")) {
             update.setInt(1, tags.energy());
             update.setInt(2, tags.activity());
             update.setInt(3, tags.analyzed() ? 1 : 0);
             update.setLong(4, tags.fileSize());
             update.setLong(5, tags.modifiedMillis());
-            update.setString(6, path.toString());
+            update.setInt(6, TrackTags.ANALYSIS_VERSION);
+            update.setString(7, path.toString());
             update.executeUpdate();
         }
     }
@@ -171,14 +229,15 @@ public final class LibraryStore {
         throws SQLException {
         try (Connection connection = connect(); PreparedStatement update = connection.prepareStatement("""
             UPDATE tracks SET genre=?, genre_override=1, energy=?, activity=?, analyzed=1,
-                file_size=?, file_modified=?, tags_override=1, analysis_version=2 WHERE path=?
+                file_size=?, file_modified=?, tags_override=1, analysis_version=? WHERE path=?
             """)) {
             update.setString(1, genre);
             update.setInt(2, energy);
             update.setInt(3, activity);
             update.setLong(4, size);
             update.setLong(5, modified);
-            update.setString(6, path.toString());
+            update.setInt(6, TrackTags.ANALYSIS_VERSION);
+            update.setString(7, path.toString());
             update.executeUpdate();
         }
     }
@@ -246,6 +305,66 @@ public final class LibraryStore {
                 connection.commit();
             } catch (SQLException error) { connection.rollback(); throw error; }
         }
+    }
+
+    /** Saves the listener's title, note, chosen room, and exact local queue in one transaction. */
+    public void saveListeningMoment(String title, String note, String room, List<Path> paths)
+        throws SQLException {
+        if (title == null || title.isBlank() || room == null || room.isBlank() || paths == null || paths.isEmpty())
+            throw new IllegalArgumentException("A listening moment needs a name, room, and tracks");
+        try (Connection connection = connect()) {
+            connection.setAutoCommit(false);
+            try (PreparedStatement insert = connection.prepareStatement(
+                    "INSERT INTO listening_moments(title,note,room,created_at_ms) VALUES (?,?,?,?)");
+                 Statement identity = connection.createStatement();
+                 PreparedStatement item = connection.prepareStatement(
+                    "INSERT INTO listening_moment_items(moment_id,position,path) VALUES (?,?,?)")) {
+                insert.setString(1, title.strip());
+                insert.setString(2, note == null ? "" : note.strip());
+                insert.setString(3, room.strip());
+                insert.setLong(4, System.currentTimeMillis());
+                insert.executeUpdate();
+                long id;
+                try (ResultSet row = identity.executeQuery("SELECT last_insert_rowid()")) {
+                    if (!row.next()) throw new SQLException("Could not save listening moment");
+                    id = row.getLong(1);
+                }
+                for (int i = 0; i < paths.size(); i++) {
+                    item.setLong(1, id);
+                    item.setInt(2, i);
+                    item.setString(3, paths.get(i).toString());
+                    item.addBatch();
+                }
+                item.executeBatch();
+                connection.commit();
+            } catch (SQLException error) {
+                connection.rollback();
+                throw error;
+            }
+        }
+    }
+
+    /** Loads a small recent shelf so the home screen stays quick and personal. */
+    public List<ListeningMoment> loadListeningMoments() throws SQLException {
+        List<ListeningMoment> result = new ArrayList<>();
+        try (Connection connection = connect();
+             PreparedStatement query = connection.prepareStatement(
+                 "SELECT id,title,note,room,created_at_ms FROM listening_moments ORDER BY created_at_ms DESC LIMIT 8");
+             PreparedStatement items = connection.prepareStatement(
+                 "SELECT path FROM listening_moment_items WHERE moment_id=? ORDER BY position");
+             ResultSet rows = query.executeQuery()) {
+            while (rows.next()) {
+                long id = rows.getLong(1);
+                items.setLong(1, id);
+                List<Path> paths = new ArrayList<>();
+                try (ResultSet files = items.executeQuery()) {
+                    while (files.next()) paths.add(Path.of(files.getString(1)));
+                }
+                result.add(new ListeningMoment(id, rows.getString(2), rows.getString(3),
+                    rows.getString(4), rows.getLong(5), paths));
+            }
+        }
+        return result;
     }
 
     public void savePlaybackMemory(PlaybackMemory memory) throws SQLException {
@@ -361,6 +480,7 @@ public final class LibraryStore {
     private Connection connect() throws SQLException {
         Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database);
         try (Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA foreign_keys=ON");
             statement.execute("PRAGMA busy_timeout=5000");
         }
         return connection;

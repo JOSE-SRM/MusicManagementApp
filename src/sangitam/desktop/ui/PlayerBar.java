@@ -19,6 +19,7 @@ public final class PlayerBar extends JPanel {
         void next();
         void seek(double fraction);
         void volume(double fraction);
+        default void openNowPlaying() { }
     }
 
     private final JLabel title = UiFactory.label("Nothing playing", Theme.BODY_BOLD, Theme.TEXT);
@@ -35,13 +36,34 @@ public final class PlayerBar extends JPanel {
             BorderFactory.createMatteBorder(1, 0, 0, 0, Theme.DIVIDER), Theme.padding(12, 22, 12, 22)));
         setPreferredSize(new Dimension(0, 88));
 
-        JPanel track = new JPanel();
+        JPanel track = new JPanel(new BorderLayout(8, 0));
         track.setOpaque(false);
-        track.setLayout(new BoxLayout(track, BoxLayout.Y_AXIS));
-        track.add(title);
-        track.add(Box.createVerticalStrut(4));
-        track.add(artist);
+        JPanel metadata = new JPanel();
+        metadata.setOpaque(false);
+        metadata.setLayout(new BoxLayout(metadata, BoxLayout.Y_AXIS));
+        metadata.add(title);
+        metadata.add(Box.createVerticalStrut(4));
+        metadata.add(artist);
+        track.add(metadata, BorderLayout.CENTER);
+        JButton expand = UiFactory.iconButton(AppIcons.of(AppIcons.Kind.EXPAND, 15, Theme.TEXT_MUTED),
+            "Open the listening space");
+        expand.addActionListener(event -> actions.openNowPlaying());
+        track.add(expand, BorderLayout.EAST);
         track.setPreferredSize(new Dimension(190, 50));
+        track.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        track.setFocusable(true);
+        track.setToolTipText("Open the listening space");
+        track.getAccessibleContext().setAccessibleName("Open Now Playing listening space");
+        track.addMouseListener(new MouseAdapter() {
+            @Override public void mouseClicked(MouseEvent event) {
+                if (event.getClickCount() == 1) actions.openNowPlaying();
+            }
+        });
+        track.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ENTER"), "openNowPlaying");
+        track.getActionMap().put("openNowPlaying", new AbstractAction() {
+            private static final long serialVersionUID = 1L;
+            @Override public void actionPerformed(java.awt.event.ActionEvent event) { actions.openNowPlaying(); }
+        });
         add(track, BorderLayout.WEST);
 
         JPanel center = new JPanel(new BorderLayout(0, 5));
@@ -98,6 +120,7 @@ public final class PlayerBar extends JPanel {
     public void setState(PlaybackState state) {
         Track current = state.track();
         title.setText(current == null ? "Nothing playing" : current.title());
+        artist.setToolTipText(current == null ? "Open the listening space" : "Open Now Playing · " + current.title());
         if (state.status() == PlaybackState.Status.ERROR) artist.setText(state.error());
         else if (state.status() == PlaybackState.Status.LOADING) artist.setText("Loading audio…");
         else artist.setText(current == null ? "Import music to begin" : current.artist());

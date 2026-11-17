@@ -25,9 +25,11 @@ final class TrackCellRenderer extends DefaultListCellRenderer {
         if (value instanceof Track track) {
             TrackTags profile = tags.getOrDefault(track.path(), TrackTags.pending());
             String genre = track.genre().equalsIgnoreCase("Unknown genre") ? "Genre untagged" : track.genre();
+            String signal = profile.analyzed()
+                ? "~Energy " + profile.energy() + " · ~Movement " + profile.activity()
+                : "Audio traits not measured";
             setText("<html><b>" + escape(track.title()) + "</b> — " + escape(track.artist())
-                + "<br><small>" + escape(profile.energyLabel()) + " · "
-                + escape(profile.activityLabel()) + " · " + escape(genre)
+                + "<br><small>" + escape(signal) + " · " + escape(genre)
                 + (manuallyEdited.contains(track.path()) ? " · Edited" : "") + "</small></html>");
             setBorder(Theme.padding(5, 11, 5, 11));
         }

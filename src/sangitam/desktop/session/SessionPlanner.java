@@ -28,6 +28,11 @@ public final class SessionPlanner {
 
     public Plan build(Request request, List<Track> tracks, Map<Path, TrackTags> tags,
                       Map<Path, Integer> playCounts) {
+        return build(request, tracks, tags, playCounts, Set.of());
+    }
+
+    public Plan build(Request request, List<Track> tracks, Map<Path, TrackTags> tags,
+                      Map<Path, Integer> playCounts, Set<Path> listenerEditedTags) {
         List<Choice> chosen = new ArrayList<>();
         Set<Path> used = new HashSet<>();
         Set<String> artists = new HashSet<>();
@@ -52,7 +57,8 @@ public final class SessionPlanner {
                     if (shortest != null) {
                         TrackTags profile = tags.getOrDefault(shortest.path(), TrackTags.pending());
                         chosen.add(new Choice(shortest, explain(request, shortest, profile,
-                            playCounts.getOrDefault(shortest.path(), 0)) + " · longer than requested time"));
+                            playCounts.getOrDefault(shortest.path(), 0), listenerEditedTags.contains(shortest.path()))
+                            + " · longer than requested time"));
                         total += duration(shortest);
                     }
                 }
@@ -60,10 +66,11 @@ public final class SessionPlanner {
             }
             TrackTags profile = tags.getOrDefault(best.path(), TrackTags.pending());
             chosen.add(new Choice(best, explain(request, best, profile,
-                playCounts.getOrDefault(best.path(), 0))));
+                playCounts.getOrDefault(best.path(), 0), listenerEditedTags.contains(best.path()))));
             used.add(best.path());
             artists.add(best.artist().toLowerCase(Locale.ROOT));
-            genres.add(best.genre().toLowerCase(Locale.ROOT));
+            if (!best.genre().equalsIgnoreCase("Unknown genre"))
+                genres.add(best.genre().toLowerCase(Locale.ROOT));
             total += duration(best);
         }
         return new Plan(chosen, request.minutes(), total);
@@ -81,21 +88,21 @@ public final class SessionPlanner {
         String genre = track.genre().toLowerCase(Locale.ROOT);
         if (request.intent() == Intent.FOCUS && hasAny(genre, "ambient", "classical", "instrumental", "soundtrack")) score += 24;
         if (request.intent() == Intent.UNWIND && hasAny(genre, "ambient", "acoustic", "jazz", "classical", "chill")) score += 24;
-        if (request.intent() == Intent.EXPLORE && !genres.contains(genre)) score += 20;
+        if (!genre.equals("unknown genre") && request.intent() == Intent.EXPLORE && !genres.contains(genre)) score += 20;
         if (artists.contains(track.artist().toLowerCase(Locale.ROOT))) score -= 24;
         score += request.familiarFirst() ? Math.min(plays * 8, 24) : (plays == 0 ? 10 : 0);
         return score;
     }
 
-    private String explain(Request request, Track track, TrackTags tags, int plays) {
+    private String explain(Request request, Track track, TrackTags tags, int plays, boolean listenerEdited) {
         List<String> facts = new ArrayList<>();
         if (tags.analyzed()) {
-            facts.add(tags.energyLabel().toLowerCase(Locale.ROOT) + " energy " + tags.energy()
-                + "/100 (target " + request.energy() + ")");
-            facts.add(tags.activityLabel().toLowerCase(Locale.ROOT));
+            facts.add(tags.energyEstimate() + " (target " + request.energy() + ")");
+            facts.add(tags.movementEstimate());
         } else {
             facts.add("audio traits unavailable");
         }
+        if (listenerEdited) facts.add("tags corrected by you");
         if (!track.genre().equalsIgnoreCase("Unknown genre")) facts.add(track.genre() + " genre tag");
         if (request.familiarFirst() && plays > 0) facts.add("played " + plays + " times");
         if (!request.familiarFirst() && plays == 0) facts.add("new to your listening history");

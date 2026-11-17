@@ -25,6 +25,7 @@ public final class SessionQueuePanel extends JPanel {
     private final Actions actions;
     private final DefaultListModel<SessionPlanner.Choice> model = new DefaultListModel<>();
     private final JList<SessionPlanner.Choice> list = new JList<>(model);
+    private final JPanel queueCards = new JPanel(new CardLayout());
     private final JComboBox<Track> addTrack = new JComboBox<>();
     private final JComboBox<Playlist> savedPlaylists = new JComboBox<>();
     private final JLabel summary = UiFactory.label("Build a session to see its queue.", Theme.SMALL, Theme.TEXT_MUTED);
@@ -37,7 +38,7 @@ public final class SessionQueuePanel extends JPanel {
             UiFactory.roundedBorder(Theme.DIVIDER, 16), Theme.padding(18, 20, 18, 20)));
         JPanel heading = new JPanel(new BorderLayout());
         heading.setOpaque(false);
-        heading.add(UiFactory.label("Session queue", Theme.HEADING, Theme.TEXT), BorderLayout.WEST);
+        heading.add(UiFactory.label("Your route", Theme.HEADING, Theme.TEXT), BorderLayout.WEST);
         heading.add(summary, BorderLayout.EAST);
         add(heading, BorderLayout.NORTH);
 
@@ -63,7 +64,13 @@ public final class SessionQueuePanel extends JPanel {
             private static final long serialVersionUID = 1L;
             @Override public void actionPerformed(java.awt.event.ActionEvent event) { playSelected(); }
         });
-        JScrollPane scroll = new JScrollPane(list);
+        JLabel empty = UiFactory.label("Shape a room above and your route will appear here.",
+            Theme.BODY, Theme.TEXT_MUTED);
+        empty.setHorizontalAlignment(SwingConstants.CENTER);
+        queueCards.add(list, "tracks");
+        queueCards.add(empty, "empty");
+        ((CardLayout) queueCards.getLayout()).show(queueCards, "empty");
+        JScrollPane scroll = new JScrollPane(queueCards);
         scroll.setBorder(UiFactory.roundedBorder(Theme.DIVIDER, 10));
         add(scroll, BorderLayout.CENTER);
 
@@ -75,7 +82,7 @@ public final class SessionQueuePanel extends JPanel {
         button(edit, "Move down", () -> move(1));
         button(edit, "Remove", this::removeSelected);
         footer.add(edit, BorderLayout.WEST);
-        JButton play = UiFactory.button("Play session", AppIcons.of(AppIcons.Kind.PLAY, 15, Theme.BLACK), true);
+        JButton play = UiFactory.button("Enter this space", AppIcons.of(AppIcons.Kind.PLAY, 15, Theme.BLACK), true);
         play.addActionListener(event -> { if (!model.isEmpty()) actions.start(choices()); });
         footer.add(play, BorderLayout.EAST);
 
@@ -100,7 +107,7 @@ public final class SessionQueuePanel extends JPanel {
         playlists.add(savedPlaylists, BorderLayout.CENTER);
         JPanel playlistActions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
         playlistActions.setOpaque(false);
-        button(playlistActions, "Save playlist", this::savePlaylist);
+        button(playlistActions, "Keep as playlist", this::savePlaylist);
         button(playlistActions, "Load", () -> {
             Playlist selected = (Playlist) savedPlaylists.getSelectedItem();
             if (selected != null) actions.load(selected);
@@ -121,6 +128,7 @@ public final class SessionQueuePanel extends JPanel {
         lower.add(playlists, BorderLayout.SOUTH);
         bottom.add(lower, BorderLayout.SOUTH);
         add(bottom, BorderLayout.SOUTH);
+        updatePreferredHeight();
     }
 
     public void setAvailableTracks(List<Track> tracks) {
@@ -131,12 +139,15 @@ public final class SessionQueuePanel extends JPanel {
             tracks.stream().filter(track -> track.path().equals(selected.path())).findFirst()
                 .ifPresent(addTrack::setSelectedItem);
         }
+        updateQueueView();
     }
 
     public void setPlan(SessionPlanner.Plan plan) {
         model.clear();
         plan.choices().forEach(model::addElement);
+        updateQueueView();
         updateSummary();
+        updatePreferredHeight();
     }
 
     public void setPlaylists(List<Playlist> playlists) {
@@ -204,8 +215,19 @@ public final class SessionQueuePanel extends JPanel {
     }
 
     private void changed() {
+        updateQueueView();
         updateSummary();
+        updatePreferredHeight();
         actions.edited(choices());
+    }
+
+    private void updateQueueView() {
+        ((CardLayout) queueCards.getLayout()).show(queueCards, model.isEmpty() ? "empty" : "tracks");
+    }
+
+    private void updatePreferredHeight() {
+        int height = Math.min(410, 236 + model.size() * 58);
+        setPreferredSize(new Dimension(760, height));
     }
 
     private void updateSummary() {

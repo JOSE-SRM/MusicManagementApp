@@ -5,7 +5,9 @@ import sangitam.desktop.history.HistoryService;
 import sangitam.desktop.history.QualifiedPlayTracker;
 import sangitam.desktop.model.Track;
 import sangitam.desktop.model.Playlist;
+import sangitam.desktop.model.ListeningMoment;
 import sangitam.desktop.model.PlaybackMemory;
+import sangitam.desktop.model.TrackTags;
 import sangitam.desktop.playback.JavaFxPlayerService;
 import sangitam.desktop.playback.PlaybackState;
 import sangitam.desktop.playback.PlayerService;
@@ -45,32 +47,42 @@ public final class MainFrame extends JFrame {
     private DiscoverPanel discover;
     private RediscoverPanel rediscover;
     private LibraryPanel libraryPanel;
+    private ListeningWorldPanel listeningWorld;
+    private SessionRecapPanel sessionRecap;
+    private NavigationPanel navigation;
     private PlayerBar playerBar;
+    private JPanel playerFooter;
+    private JMenuBar appMenuBar;
     private List<Track> tracks = List.of();
     private Track selectedTrack;
     private List<SessionPlanner.Choice> sessionQueue = List.of();
     private int sessionIndex = -1;
     private boolean sessionActive;
     private long playGeneration;
-    private boolean compactLayout;
     private boolean workspaceReady;
     private boolean userSelectedTrack;
     private PlaybackMemory remembered;
     private double lastSavedPosition = -10;
     private double desiredVolume = 0.72;
+    private ListeningSpace activeSpace = ListeningSpace.QUIET_ORBIT;
+    private List<SessionPlanner.Choice> completedSession = List.of();
+    private boolean immersiveOpen;
+    private String screenBeforeListening = "home";
+    private String activeScreen = "loading";
 
     public MainFrame() {
-        super("Sangitam — Music Management");
+        super("Sangitam — Your listening space");
         setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
         setMinimumSize(new Dimension(960, 640));
         setSize(1360, 820);
         setLocationRelativeTo(null);
         setContentPane(buildShell());
-        setJMenuBar(new AppMenuBar(this::openImportDialog, this::exportCurrentPlaylist,
+        appMenuBar = new AppMenuBar(this::openImportDialog, this::exportCurrentPlaylist,
             this::openCommandPalette,
             this::togglePlayback, this::previousTrack, this::nextTrack,
             () -> showScreen("search"), () -> showScreen("discover"),
-            notifications::show, this::closeApp));
+            notifications::show, this::closeApp);
+        setJMenuBar(appMenuBar);
         installKeyboardShortcuts();
         addComponentListener(new ComponentAdapter() {
             @Override public void componentResized(ComponentEvent event) { updateResponsiveLayout(); }
@@ -95,16 +107,35 @@ public final class MainFrame extends JFrame {
                 }
                 @Override public void load(Playlist playlist) { loadPlaylist(playlist); }
                 @Override public void delete(Playlist playlist) { deletePlaylist(playlist); }
-            });
+            }, this::playMoment, this::openNowPlaying);
         search = new SearchPanel(this::playTrack);
         discover = new DiscoverPanel(notifications::show);
         rediscover = new RediscoverPanel(history, this::playTrack, notifications::show);
+        listeningWorld = new ListeningWorldPanel(new ListeningWorldPanel.Actions() {
+            @Override public void back() { leaveNowPlaying(); }
+            @Override public void previous() { previousTrack(); }
+            @Override public void playPause() { togglePlayback(); }
+            @Override public void next() { nextTrack(); }
+            @Override public void seek(double fraction) { seekTo(fraction); }
+            @Override public void playAt(int index) {
+                if (sessionActive && index >= 0 && index < sessionQueue.size()) playSessionIndex(index);
+                else if (!sessionActive && index >= 0 && index < tracks.size()) playTrack(tracks.get(index));
+            }
+        });
+        sessionRecap = new SessionRecapPanel(new SessionRecapPanel.Actions() {
+            @Override public void save(String title, String note) { saveListeningMoment(title, note); }
+            @Override public void shapeAnother() { showScreen("home"); }
+            @Override public void rediscover() { showScreen("rediscover"); }
+        });
         screens.removeAll();
         screens.add(dashboard, "home");
         screens.add(search, "search");
         screens.add(discover, "discover");
         screens.add(rediscover, "rediscover");
-        libraryPanel = new LibraryPanel(this::openImportDialog, this::playTrack, this::editTags);
+        screens.add(listeningWorld, "nowplaying");
+        screens.add(sessionRecap, "recap");
+        libraryPanel = new LibraryPanel(this::openImportDialog, this::playTrack, this::editTags,
+            this::createPlaylistFromLibrary);
         workspace.add(libraryPanel, BorderLayout.EAST);
         workspaceReady = true;
         workspace.revalidate();
@@ -114,6 +145,7 @@ public final class MainFrame extends JFrame {
         memory.load(this::restorePlayback, notifications::show);
         library.loadInitial(notifications::show);
         refreshPlaylists();
+        refreshMoments();
     }
 
     private JComponent buildShell() {
@@ -129,17 +161,19 @@ public final class MainFrame extends JFrame {
                 desiredVolume = fraction;
                 if (player != null) player.setVolume(fraction);
             }
+            @Override public void openNowPlaying() { MainFrame.this.openNowPlaying(); }
         });
-        JPanel lower = new JPanel(new BorderLayout());
-        lower.add(playerBar, BorderLayout.CENTER);
-        lower.add(notifications, BorderLayout.SOUTH);
-        root.add(lower, BorderLayout.SOUTH);
+        playerFooter = new JPanel(new BorderLayout());
+        playerFooter.add(playerBar, BorderLayout.CENTER);
+        playerFooter.add(notifications, BorderLayout.SOUTH);
+        root.add(playerFooter, BorderLayout.SOUTH);
         screens.setBackground(Theme.BLACK);
         workspace.setBackground(Theme.BLACK);
         screens.add(UiFactory.label("Loading your music…", Theme.HEADING, Theme.TEXT_MUTED), "loading");
         workspace.add(screens, BorderLayout.CENTER);
-        root.add(new NavigationPanel(this::showScreen, this::openImportDialog,
-            this::toggleLibrary, this::openCommandPalette, notifications::show), BorderLayout.WEST);
+        navigation = new NavigationPanel(this::showScreen, this::openImportDialog,
+            this::toggleLibrary, this::openCommandPalette, notifications::show);
+        root.add(navigation, BorderLayout.WEST);
         root.add(workspace, BorderLayout.CENTER);
         return root;
     }
@@ -157,6 +191,7 @@ public final class MainFrame extends JFrame {
         }
         restoreLastIfAvailable();
         if (selectedTrack == null && !updated.isEmpty()) selectedTrack = updated.get(0);
+        dashboard.setCurrentTrack(resumableTrack());
     }
 
     private void restorePlayback(PlaybackMemory saved) {
@@ -177,9 +212,19 @@ public final class MainFrame extends JFrame {
         }
     }
 
+    private Track resumableTrack() {
+        if (remembered != null) {
+            for (Track track : tracks) if (track.path().equals(remembered.path())) return track;
+        }
+        PlaybackState state = player == null ? PlaybackState.idle() : player.state();
+        return state.track();
+    }
+
     private void onPlaybackState(PlaybackState state) {
         if (state.status() == PlaybackState.Status.IDLE && remembered != null && !userSelectedTrack) return;
         playerBar.setState(state);
+        if (listeningWorld != null) listeningWorld.setPlayback(state, tagsFor(state.track()));
+        if (dashboard != null && state.track() != null) dashboard.setCurrentTrack(state.track());
         if (state.track() != null && state.status() == PlaybackState.Status.PLAYING
             && Math.abs(state.positionSeconds() - lastSavedPosition) >= 5) {
             savePosition(state.track(), state.positionSeconds());
@@ -204,7 +249,7 @@ public final class MainFrame extends JFrame {
                 if (sessionIndex + 1 < sessionQueue.size()) playSessionIndex(sessionIndex + 1);
                 else {
                     sessionActive = false;
-                    notifications.show("Session complete");
+                    showSessionRecap();
                 }
             } else {
                 int index = indexOf(tracks, state.track());
@@ -217,6 +262,9 @@ public final class MainFrame extends JFrame {
         sessionActive = false;
         userSelectedTrack = true;
         selectedTrack = track;
+        dashboard.setCurrentTrack(track);
+        if (listeningWorld != null)
+            listeningWorld.setSession(libraryQueue(), indexOf(tracks, track), activeSpace);
         playGeneration++;
         savePosition(track, 0);
         ensurePlayer().play(track);
@@ -234,15 +282,17 @@ public final class MainFrame extends JFrame {
             @Override protected SessionPlanner.Plan doInBackground() {
                 List<Track> playable = source.tracks().stream()
                     .filter(track -> Files.isRegularFile(track.path())).toList();
-                return planner.build(request, playable, source.tags(), source.playCounts());
+                return planner.build(request, playable, source.tags(), source.playCounts(), source.manualTags());
             }
             @Override protected void done() {
                 try {
                     SessionPlanner.Plan plan = get();
                     sessionQueue = plan.choices();
+                    activeSpace = ListeningSpace.forIntent(request.intent());
                     sessionActive = false;
                     sessionIndex = -1;
                     dashboard.showPlan(plan);
+                    listeningWorld.setSession(sessionQueue, 0, activeSpace);
                     notifications.show(plan.choices().isEmpty() ? "No playable tracks found"
                         : "Session ready: " + plan.choices().size() + " tracks");
                 } catch (Exception error) {
@@ -281,6 +331,29 @@ public final class MainFrame extends JFrame {
                     notifications.show("Saved playlist: " + name);
                 }
                 catch (Exception error) { notifications.show("Could not save playlist"); }
+            }
+        }.execute();
+    }
+
+    private void createPlaylistFromLibrary(String name, List<Track> selectedTracks) {
+        if (name == null || name.isBlank() || selectedTracks == null || selectedTracks.isEmpty()) return;
+        new SwingWorker<List<Playlist>, Void>() {
+            @Override protected List<Playlist> doInBackground() throws Exception {
+                synchronized (store) {
+                    store.initialize();
+                    store.savePlaylist(name, selectedTracks.stream().map(Track::path).toList());
+                    return store.loadPlaylists();
+                }
+            }
+            @Override protected void done() {
+                try {
+                    dashboard.setPlaylists(get());
+                    dashboard.selectPlaylist(name);
+                    notifications.show("Created playlist “" + name.strip() + "” from "
+                        + selectedTracks.size() + " selected tracks");
+                } catch (Exception error) {
+                    notifications.show("Could not create playlist. Check the name and try again.");
+                }
             }
         }.execute();
     }
@@ -376,12 +449,14 @@ public final class MainFrame extends JFrame {
         if (choices.isEmpty()) { notifications.show("Build or add a track first"); return; }
         sessionQueue = List.copyOf(choices);
         sessionActive = true;
+        activeSpace = dashboard.currentSpace();
         playSessionIndex(0);
     }
 
     private void startSessionAt(SessionPlanner.Choice choice, List<SessionPlanner.Choice> choices) {
         sessionQueue = List.copyOf(choices);
         sessionActive = true;
+        activeSpace = dashboard.currentSpace();
         int index = sessionQueue.indexOf(choice);
         playSessionIndex(Math.max(0, index));
     }
@@ -395,12 +470,16 @@ public final class MainFrame extends JFrame {
             if (sessionQueue.isEmpty()) sessionActive = false;
             else sessionIndex = Math.min(previousIndex - 1, sessionQueue.size() - 1);
         }
+        if (listeningWorld != null) listeningWorld.setSession(sessionQueue, sessionIndex, activeSpace);
     }
 
     private void playSessionIndex(int index) {
         if (index < 0 || index >= sessionQueue.size()) return;
         sessionIndex = index;
         selectedTrack = sessionQueue.get(index).track();
+        dashboard.setCurrentTrack(selectedTrack);
+        listeningWorld.setSession(sessionQueue, index, activeSpace);
+        openNowPlaying();
         userSelectedTrack = true;
         playGeneration++;
         savePosition(selectedTrack, 0);
@@ -467,12 +546,132 @@ public final class MainFrame extends JFrame {
 
     private void showScreen(String name) {
         if (!workspaceReady) { notifications.show("Workspace is loading…"); return; }
+        if (immersiveOpen) restoreChrome();
+        activeScreen = name;
+        navigation.setActive(name);
         boolean collectionCategory = name.equals("songs") || name.equals("albums") || name.equals("artists");
         screenLayout.show(screens, collectionCategory ? "search" : name.equals("playlists") ? "home" : name);
         if (collectionCategory) search.selectCategory(name);
         if (name.equals("playlists")) SwingUtilities.invokeLater(dashboard::focusPlaylists);
         if (name.equals("discover")) discover.focusSearch();
         notifications.show(Character.toUpperCase(name.charAt(0)) + name.substring(1) + " opened");
+    }
+
+    /** Enters a full-canvas listening space from the player or a session start. */
+    private void openNowPlaying() {
+        if (!workspaceReady || listeningWorld == null) return;
+        if (!immersiveOpen) screenBeforeListening = activeScreen.equals("nowplaying") ? "home" : activeScreen;
+        if (!sessionActive && dashboard != null) activeSpace = dashboard.currentSpace();
+        immersiveOpen = true;
+        activeScreen = "nowplaying";
+        navigation.setVisible(false);
+        setJMenuBar(null);
+        if (libraryPanel != null) libraryPanel.setVisible(false);
+        if (playerFooter != null) playerFooter.setVisible(false);
+        List<SessionPlanner.Choice> queue = sessionActive ? sessionQueue : libraryQueue();
+        int index = sessionActive ? sessionIndex : indexOf(tracks, selectedTrack);
+        listeningWorld.setSession(queue, index, activeSpace);
+        PlaybackState current = player == null ? null : player.state();
+        if ((current == null || current.track() == null) && selectedTrack != null)
+            current = new PlaybackState(selectedTrack, PlaybackState.Status.PAUSED,
+                lastSavedPosition, selectedTrack.durationSeconds(), null);
+        listeningWorld.setPlayback(current, tagsFor(current == null ? null : current.track()));
+        screenLayout.show(screens, "nowplaying");
+        revalidate();
+        repaint();
+    }
+
+    private void leaveNowPlaying() {
+        if (!immersiveOpen) return;
+        String destination = screenBeforeListening;
+        restoreChrome();
+        showScreen(destination.equals("loading") ? "home" : destination);
+    }
+
+    private void restoreChrome() {
+        immersiveOpen = false;
+        navigation.setVisible(true);
+        if (playerFooter != null) playerFooter.setVisible(true);
+        if (appMenuBar != null) setJMenuBar(appMenuBar);
+        updateResponsiveLayout();
+        revalidate();
+        repaint();
+    }
+
+    private void showSessionRecap() {
+        completedSession = List.copyOf(sessionQueue);
+        sessionRecap.setSession(completedSession, activeSpace);
+        if (immersiveOpen) restoreChrome();
+        activeScreen = "recap";
+        screenLayout.show(screens, "recap");
+        notifications.show("Journey complete · keep this listening moment if you’d like");
+    }
+
+    private List<SessionPlanner.Choice> libraryQueue() {
+        return tracks.stream().map(track -> new SessionPlanner.Choice(track, "In your library")).toList();
+    }
+
+    private TrackTags tagsFor(Track track) {
+        if (track == null) return TrackTags.pending();
+        try { return library.catalog().tagsFor(track); }
+        catch (RuntimeException ignored) { return TrackTags.pending(); }
+    }
+
+    private ListeningSpace spaceNamed(String name) {
+        for (ListeningSpace space : ListeningSpace.values())
+            if (space.displayName().equalsIgnoreCase(name)) return space;
+        return ListeningSpace.QUIET_ORBIT;
+    }
+
+    private void playMoment(ListeningMoment moment) {
+        Map<java.nio.file.Path, Track> available = new java.util.HashMap<>();
+        tracks.forEach(track -> available.put(track.path(), track));
+        List<SessionPlanner.Choice> choices = moment.tracks().stream().map(available::get)
+            .filter(java.util.Objects::nonNull)
+            .map(track -> new SessionPlanner.Choice(track, "Kept in “" + moment.title() + "”")).toList();
+        if (choices.isEmpty()) {
+            notifications.show("Those files are no longer in your library");
+            return;
+        }
+        activeSpace = spaceNamed(moment.room());
+        sessionQueue = choices;
+        sessionActive = true;
+        playSessionIndex(0);
+    }
+
+    private void saveListeningMoment(String title, String note) {
+        if (completedSession.isEmpty()) { notifications.show("There is no completed journey to keep yet"); return; }
+        List<java.nio.file.Path> paths = completedSession.stream().map(choice -> choice.track().path()).toList();
+        String room = activeSpace.displayName();
+        new SwingWorker<Void, Void>() {
+            @Override protected Void doInBackground() throws Exception {
+                synchronized (store) {
+                    store.initialize();
+                    store.saveListeningMoment(title, note, room, paths);
+                }
+                return null;
+            }
+            @Override protected void done() {
+                try {
+                    get();
+                    refreshMoments();
+                    showScreen("home");
+                    notifications.show("Kept “" + title + "” in your listening moments");
+                } catch (Exception error) { notifications.show("Could not save this listening moment"); }
+            }
+        }.execute();
+    }
+
+    private void refreshMoments() {
+        new SwingWorker<List<ListeningMoment>, Void>() {
+            @Override protected List<ListeningMoment> doInBackground() throws Exception {
+                synchronized (store) { store.initialize(); return store.loadListeningMoments(); }
+            }
+            @Override protected void done() {
+                try { if (dashboard != null) dashboard.setMoments(get()); }
+                catch (Exception error) { notifications.show("Could not load saved listening moments"); }
+            }
+        }.execute();
     }
 
     private void openImportDialog() {
@@ -486,6 +685,14 @@ public final class MainFrame extends JFrame {
         getRootPane().getActionMap().put("quickActions", new AbstractAction() {
             private static final long serialVersionUID = 1L;
             @Override public void actionPerformed(java.awt.event.ActionEvent event) { openCommandPalette(); }
+        });
+        getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW)
+            .put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "leaveListeningSpace");
+        getRootPane().getActionMap().put("leaveListeningSpace", new AbstractAction() {
+            private static final long serialVersionUID = 1L;
+            @Override public void actionPerformed(java.awt.event.ActionEvent event) {
+                if (immersiveOpen) leaveNowPlaying();
+            }
         });
     }
 
@@ -514,11 +721,16 @@ public final class MainFrame extends JFrame {
     /** On narrower windows the library yields space to the main task. */
     private void updateResponsiveLayout() {
         if (libraryPanel == null) return;
+        if (immersiveOpen) {
+            libraryPanel.setVisible(false);
+            return;
+        }
         boolean nowCompact = getWidth() < 1180;
-        if (nowCompact == compactLayout) return;
-        compactLayout = nowCompact;
-        libraryPanel.setVisible(!nowCompact);
-        libraryPanel.getParent().revalidate();
+        boolean showLibrary = !nowCompact;
+        if (libraryPanel.isVisible() != showLibrary) {
+            libraryPanel.setVisible(showLibrary);
+            libraryPanel.getParent().revalidate();
+        }
     }
 
     private void closeApp() {
