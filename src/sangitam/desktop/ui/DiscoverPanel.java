@@ -41,7 +41,7 @@ public final class DiscoverPanel extends JPanel {
         title.setAlignmentX(Component.LEFT_ALIGNMENT);
         header.add(title);
         header.add(Box.createVerticalStrut(7));
-        JLabel subtitle = UiFactory.label("Explore catalogs, then listen through the provider.", Theme.BODY,
+        JLabel subtitle = UiFactory.label("Search music catalogs; results open in their provider. Sangitam playback uses your local files.", Theme.BODY,
             Theme.TEXT_MUTED);
         subtitle.setAlignmentX(Component.LEFT_ALIGNMENT);
         header.add(subtitle);

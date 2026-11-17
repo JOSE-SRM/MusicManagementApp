@@ -17,6 +17,11 @@ public final class Theme {
     public static final Color SURFACE_HOVER = new Color(25, 37, 49);
     public static final Color BLUE = new Color(112, 203, 255);
     public static final Color BLUE_STRONG = new Color(51, 157, 224);
+    /** Supporting colors are reserved for session intent and music-led visual feedback. */
+    public static final Color VIOLET = new Color(157, 143, 255);
+    public static final Color CORAL = new Color(255, 157, 126);
+    public static final Color MINT = new Color(111, 225, 190);
+    public static final Color AMBER = new Color(255, 205, 125);
     public static final Color TEXT = new Color(240, 247, 252);
     public static final Color TEXT_MUTED = new Color(145, 165, 181);
     public static final Color DIVIDER = new Color(31, 45, 58);
